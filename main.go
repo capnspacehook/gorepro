@@ -21,8 +21,6 @@ import (
 	"github.com/goretk/gore"
 )
 
-// TODO: GODEBUG=gocachehash=1 when verbose
-
 const (
 	cmdLinePkg      = "command-line-arguments"
 	goVersionPrefix = "go version go"
@@ -38,6 +36,7 @@ var (
 	additionalFlags string
 	dryRun          bool
 	goCommand       string
+	goDebug         bool
 	verbose         bool
 
 	goEnvVars = []string{
@@ -103,28 +102,28 @@ func infof(format string, a ...any) {
 	if !verbose {
 		return
 	}
-	infoColor.Fprintf(os.Stderr, format, a...)
-	infoColor.Fprint(os.Stderr, "\n")
+	infoColor.Printf(format, a...)
+	infoColor.Printf("\n")
 }
 
 func warnf(format string, a ...any) {
-	warnColor.Fprintf(os.Stderr, format, a...)
-	warnColor.Fprint(os.Stderr, "\n")
+	warnColor.Printf(format, a...)
+	warnColor.Printf("\n")
 }
 
 func errf(format string, a ...any) {
-	errColor.Fprintf(os.Stderr, format, a...)
-	errColor.Fprint(os.Stderr, "\n")
+	errColor.Printf(format, a...)
+	errColor.Printf("\n")
 }
 
 func almostf(format string, a ...any) {
-	almostColor.Fprintf(os.Stderr, format, a...)
-	almostColor.Fprint(os.Stderr, "\n")
+	almostColor.Printf(format, a...)
+	almostColor.Printf("\n")
 }
 
 func successf(format string, a ...any) {
-	successColor.Fprintf(os.Stderr, format, a...)
-	successColor.Fprint(os.Stderr, "\n")
+	successColor.Printf(format, a...)
+	successColor.Printf("\n")
 }
 
 func parseVersion(version string) (semver.Version, error) {
@@ -148,14 +147,22 @@ func getBuildID(goBin, file string) ([]byte, error) {
 }
 
 func runCommand(name string, arg ...string) ([]byte, error) {
-	cmd := exec.Command(name, arg...)
-	infof("running command: %s", cmd)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return out, err
+	var buf bytes.Buffer
+	var w io.Writer = &buf
+	if verbose {
+		w = io.MultiWriter(w, os.Stderr)
 	}
 
-	return out, nil
+	cmd := exec.Command(name, arg...)
+	infof("running command: %s", cmd)
+	cmd.Stdout = w
+	cmd.Stderr = w
+	err := cmd.Run()
+	if err != nil {
+		return buf.Bytes(), err
+	}
+
+	return buf.Bytes(), nil
 }
 
 func main() {
@@ -176,7 +183,8 @@ func mainErr() (int, error) {
 	flag.Usage = usage
 	flag.StringVar(&additionalFlags, "b", "", "extra build flags that are needed to reproduce but aren't detected, comma separated")
 	flag.BoolVar(&dryRun, "d", false, "print build commands instead of running them")
-	flag.StringVar(&goCommand, "g", "", `Path to "go" command to use to build`)
+	flag.StringVar(&goCommand, "g", "", `path to "go" command to use to build`)
+	flag.BoolVar(&goDebug, "godebug", false, "print very verbose debug information from the Go compiler")
 	flag.BoolVar(&verbose, "v", false, "print commands being run and verbose information")
 	flag.Parse()
 
@@ -321,7 +329,7 @@ func mainErr() (int, error) {
 			if dryRun {
 				fmt.Printf("go install %s\n%s download\n", pkg, goBin)
 			} else {
-				infof("installing %s", goBin)
+				infof("downloading %s", goBin)
 				out, err := runCommand("go", "install", pkg)
 				if err != nil {
 					return 1, fmt.Errorf("error installing %s: %s %v", goBin, out, err)
@@ -435,14 +443,21 @@ func mainErr() (int, error) {
 	for _, envVar := range goEnvVars {
 		env = append(env, fmt.Sprintf("%s=%s", envVar, os.Getenv(envVar)))
 	}
+	if goDebug {
+		// this will print extremely detailed info on what inputs are going
+		// into build IDs, very useful for debugging why builds won't reproduce
+		env = append(env, "GODEBUG=gocachehash=1")
+	}
 
 	// compile a new binary
 	cmd := exec.Command(goBin, buildArgs...)
 	cmd.Env = env
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
 	infof("running command: %s", cmd)
-	out, err = cmd.CombinedOutput()
+	err = cmd.Run()
 	if err != nil {
-		return 1, fmt.Errorf("error building: %s %v", out, err)
+		return 1, fmt.Errorf("error building: %v", err)
 	}
 
 	// check that file sizes match
