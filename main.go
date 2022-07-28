@@ -98,8 +98,15 @@ func addFailReason(format string, a ...any) {
 	failReasons = append(failReasons, fmt.Sprintf(format, a...))
 }
 
-func infof(format string, a ...any) {
+func verbosef(format string, a ...any) {
 	if !verbose {
+		return
+	}
+	infof(format, a...)
+}
+
+func infof(format string, a ...any) {
+	if dryRun {
 		return
 	}
 	infoColor.Printf(format, a...)
@@ -154,7 +161,7 @@ func runCommand(name string, arg ...string) ([]byte, error) {
 	}
 
 	cmd := exec.Command(name, arg...)
-	infof("running command: %s", cmd)
+	verbosef("running command: %s", cmd)
 	cmd.Stdout = w
 	cmd.Stderr = w
 	err := cmd.Run()
@@ -409,11 +416,22 @@ func mainErr() (int, error) {
 	}
 
 	if vcsUsed != "" {
-		tempFile, err := checkVCS(vcsUsed, vcsRev, vcsModified, binary)
+		tempFile, checkedOut, err := checkVCS(vcsUsed, vcsRev, vcsModified, binary)
 		if err != nil {
 			return 1, err
 		}
-		defer os.Remove(tempFile)
+		if tempFile != "" {
+			defer os.Remove(tempFile)
+		}
+		if checkedOut {
+			if dryRun {
+				defer fmt.Println("git checkout -")
+			} else {
+				defer func() {
+					runCommand("git", "checkout", "-")
+				}()
+			}
+		}
 	} else {
 		buildArgs = append(buildArgs, "-buildvcs=false")
 	}
@@ -454,7 +472,7 @@ func mainErr() (int, error) {
 	cmd.Env = env
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
-	infof("running command: %s", cmd)
+	verbosef("running command: %s", cmd)
 	err = cmd.Run()
 	if err != nil {
 		return 1, fmt.Errorf("error building: %v", err)
@@ -629,7 +647,7 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, goBin, binary strin
 	return false, nil
 }
 
-func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, error) {
+func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, bool, error) {
 	var ok bool
 	var tempFileName string
 	// if we didn't return successfully and a temp file was created, delete
@@ -642,18 +660,18 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 
 	if vcsUsed != "git" {
 		addFailReason("version control system %s isn't supported by gorepro", vcsUsed)
-		return "", nil
+		return "", false, nil
 	}
 
 	if _, err := exec.LookPath("git"); err != nil {
-		return "", fmt.Errorf(`could not find "git": %v`, err)
+		return "", false, fmt.Errorf(`could not find "git": %v`, err)
 	}
 	gitStatus, err := runCommand("git", "status", "--porcelain=v1")
 	if err != nil {
 		if strings.HasPrefix(string(gitStatus), "fatal: not a git repository") {
-			return "", fmt.Errorf("%q was built in a Git repo, but gorepro wasn't run in one; reproducing will fail", binary)
+			return "", false, fmt.Errorf("%q was built in a Git repo, but gorepro wasn't run in one; reproducing will fail", binary)
 		}
-		return "", fmt.Errorf("error getting Git status: %s %v", gitStatus, err)
+		return "", false, fmt.Errorf("error getting Git status: %s %v", gitStatus, err)
 	}
 
 	// if there are new/modified Go source files present, chances are
@@ -668,11 +686,11 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 			// ?? new.go
 			txt := scanner.Text()
 			if len(txt) < 4 {
-				return "", fmt.Errorf(`error parsing "git status --porcelain: line too short: %s`, txt)
+				return "", false, fmt.Errorf(`error parsing "git status --porcelain: line too short: %s`, txt)
 			}
 			_, file, ok := strings.Cut(txt[1:], " ")
 			if !ok {
-				return "", fmt.Errorf(`error parsing "git status --porcelain: line malformed: %s`, txt)
+				return "", false, fmt.Errorf(`error parsing "git status --porcelain: line malformed: %s`, txt)
 			}
 
 			_, file = filepath.Split(file)
@@ -684,41 +702,47 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			return "", fmt.Errorf(`error parsing "git status" output: %v`, err)
+			return "", false, fmt.Errorf(`error parsing "git status" output: %v`, err)
 		}
 	}
 
-	if vcsModified && len(gitStatus) == 0 {
+	if !dryRun && vcsModified && len(gitStatus) == 0 {
 		infof("%q was built in a dirty Git repo but the local Git repo is clean; creating a temporary file to make local Git repo dirty",
 			binary,
 		)
 		tempFile, err := os.CreateTemp(".", "*")
 		if err != nil {
-			return "", fmt.Errorf("error creating temporary file: %v", err)
+			return "", false, fmt.Errorf("error creating temporary file: %v", err)
 		}
 		tempFileName = tempFile.Name()
 		tempFile.Close()
 	} else if !vcsModified && len(gitStatus) != 0 {
-		return "", fmt.Errorf("%q was built in a clean Git repo, and the local Git repo isn't clean; reproducing will fail", binary)
+		return "", false, fmt.Errorf("%q was built in a clean Git repo, and the local Git repo isn't clean; reproducing will fail", binary)
 	}
 
 	gitShow, err := runCommand("git", "-c", "log.showsignature=false", "show", "-s", "--format=%H")
 	if err != nil {
-		return "", fmt.Errorf("error getting latest git commit: %s %v", gitShow, err)
+		return "", false, fmt.Errorf("error getting latest git commit: %s %v", gitShow, err)
 	}
 	// remove trailing newline
 	latestCommit := string(gitShow[:len(gitShow)-1])
+	var checkedOut bool
 	if vcsRev != latestCommit {
-		return "", fmt.Errorf("%q was built on commit %s, the latest commit in the local Git repo is %s; reproducing will fail",
-			binary,
-			vcsRev,
-			latestCommit,
-		)
+		checkedOut = true
+		if dryRun {
+			fmt.Printf("git checkout %s\n", vcsRev)
+		} else {
+			infof("%q was built on %s but we're on %s, checking out correct commit", binary, vcsRev, latestCommit)
+			out, err := runCommand("git", "checkout", vcsRev)
+			if err != nil {
+				return "", false, fmt.Errorf("error checking out git commit: %s %v", out, err)
+			}
+		}
 	}
 
 	ok = true
 
-	return tempFileName, nil
+	return tempFileName, checkedOut, nil
 }
 
 // onlyBuildIDDifferent returns true if the only bytes that differ
