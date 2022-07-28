@@ -27,9 +27,7 @@ However, gorepro can't detect everything, and some fixes aren't intuitive (looki
 
 ### Manually passing Go files
 
-Gorepro will fail if the binary you're trying to reproduce had Go files passed to the `go build` command that created it and you didn't pass the same files via `-f`, or vice versa. Yes, `go build -o mybin` and `go build -o mybin main.go` will produce slightly different binaries for some reason.
-
-For example, if a binary was built by running `CGO_ENABLED=0 go build -trimpath -o mybin main.go`, you can reproduce the binary by running `gorepro -f main.go mybin`.
+Gorepro will fail if the binary you're trying to reproduce had Go files passed to the `go build` command that created it and you aren't in the same directory as those files. Yes, `go build -o mybin` and `go build -o mybin main.go` will produce slightly different binaries for some reason. To fix, simply run gorepro in the directory of the file(s) gorepro specified.
 
 ### Undetected build flags
 

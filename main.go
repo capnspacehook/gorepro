@@ -36,7 +36,6 @@ var (
 
 	additionalFlags string
 	dryRun          bool
-	buildFiles      string
 	goCommand       string
 	verbose         bool
 
@@ -84,10 +83,6 @@ For example, to reproduce a Go binary:
 To specify required build arguments that are not detected:
 
 	gorepro -b=-buildmode=pie ./gobin
-
-To specify files to explicitly build:
-
-	gorepro -f=main.go,other.go ./gobin
 
 gorepro accepts the following flags:
 
@@ -180,7 +175,6 @@ func mainErr() (int, error) {
 	flag.Usage = usage
 	flag.StringVar(&additionalFlags, "b", "", "extra build flags that are needed to reproduce but aren't detected, comma separated")
 	flag.BoolVar(&dryRun, "d", false, "print build commands instead of running them")
-	flag.StringVar(&buildFiles, "f", "", "Go files to explicitly build, comma separated")
 	flag.StringVar(&goCommand, "g", "", `Path to "go" command to use to build`)
 	flag.BoolVar(&verbose, "v", false, "print commands being run and verbose information")
 	flag.Parse()
@@ -232,24 +226,44 @@ func mainErr() (int, error) {
 	if len(info.Settings) == 0 {
 		return 1, fmt.Errorf("no build metadata present in %q, reproducing is possible but not supported by gorepro", binary)
 	}
-	// check that main module will be built the same way
-	if info.Path == cmdLinePkg && len(buildFiles) == 0 {
-		return 1, fmt.Errorf(`%q was built by explicitly passing file(s) to be built to "go build", use "-f" to pass the same files`,
-			binary,
-		)
-	} else if info.Main.Path != "" && len(buildFiles) != 0 {
-		return 1, fmt.Errorf(`%q was built without explicitly passing file(s) to be built to "go build", omit "-f" flag`, binary)
+
+	file, err := gore.Open(binary)
+	if err != nil {
+		return 1, err
 	}
-	if info.Main.Version != "" && info.Main.Version != "(devel)" {
+	defer file.Close()
+
+	// check if source files for the main module need to be explicitly
+	// passed
+	var mainSrcFiles []string
+	if info.Path == cmdLinePkg {
+		p, err := file.GetPackages()
+		if err != nil {
+			return 1, err
+		}
+		for _, pkg := range p {
+			if pkg.Name == "main" {
+				srcFiles := file.GetSourceFiles(pkg)
+				for _, srcFile := range srcFiles {
+					mainSrcFiles = append(mainSrcFiles, srcFile.Name)
+				}
+			}
+		}
+	} else if info.Main.Version != "" && info.Main.Version != "(devel)" {
 		return 1, fmt.Errorf(`%q was built using "go install", reproducing is possible but not supported by gorepro`, binary)
 	}
 
-	// ensure passed build files exist
-	var extraFiles []string
-	if len(buildFiles) != 0 {
-		extraFiles = strings.Split(buildFiles, ",")
-		for _, file := range extraFiles {
+	// ensure main module source files exist
+	if len(mainSrcFiles) != 0 {
+		for _, file := range mainSrcFiles {
 			if _, err := os.Stat(file); err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return 1, fmt.Errorf(`%q was built by passing %q to "go build", but that file couldn't be found; rerun gorepro in the directory with %q`,
+						binary,
+						file,
+						file,
+					)
+				}
 				return 1, fmt.Errorf("error reading build file: %v", err)
 			}
 		}
@@ -375,7 +389,7 @@ func mainErr() (int, error) {
 	}
 
 	if !trimpathFound {
-		setTrimpath, err := checkTrimpath(binVer, goBin, binary, info)
+		setTrimpath, err := checkTrimpath(binVer, file, goBin, binary, info)
 		if err != nil {
 			return 1, err
 		}
@@ -406,8 +420,8 @@ func mainErr() (int, error) {
 	} else {
 		buildArgs = append(buildArgs, fmt.Sprintf("-o=%s", ourBinary))
 	}
-	if len(extraFiles) != 0 {
-		buildArgs = append(buildArgs, extraFiles...)
+	if len(mainSrcFiles) != 0 {
+		buildArgs = append(buildArgs, mainSrcFiles...)
 	}
 
 	if dryRun {
@@ -512,19 +526,13 @@ func mainErr() (int, error) {
 	return 0, nil
 }
 
-func checkTrimpath(binVer semver.Version, goBin, binary string, info *debug.BuildInfo) (bool, error) {
+func checkTrimpath(binVer semver.Version, file *gore.GoFile, goBin, binary string, info *debug.BuildInfo) (bool, error) {
 	// Go 1.19+ add -trimpath to the build metadata, on earlier Go
 	// versions we can't always know for sure if it was passed
 	trimpathUnknown := true
 	if binVer.Minor >= 19 {
 		trimpathUnknown = false
 	}
-
-	file, err := gore.Open(binary)
-	if err != nil {
-		return false, err
-	}
-	defer file.Close()
 
 	// detect if -trimpath was passed by inspecting the binary's GOROOT
 	goroot, err := file.GetGoRoot()
