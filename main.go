@@ -152,7 +152,7 @@ func runCommand(name string, arg ...string) ([]byte, error) {
 	infof("running command: %s", cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 
 	return out, nil
@@ -632,6 +632,9 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 	}
 	gitStatus, err := runCommand("git", "status", "--porcelain=v1")
 	if err != nil {
+		if strings.HasPrefix(string(gitStatus), "fatal: not a git repository") {
+			return "", fmt.Errorf("%q was built in a Git repo, but gorepro wasn't run in one; reproducing will fail", binary)
+		}
 		return "", fmt.Errorf("error getting Git status: %s %v", gitStatus, err)
 	}
 
