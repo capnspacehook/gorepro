@@ -494,6 +494,9 @@ func mainErr() (int, error) {
 	if _, err := io.Copy(ourBinHash, ourBinf); err != nil {
 		return 1, fmt.Errorf("error hashing %q: %v", ourBinary, err)
 	}
+	binSum, ourBinSum := binHash.Sum(nil), ourBinHash.Sum(nil)
+	infof("%x  %q", binSum, binary)
+	infof("%x  %q", ourBinSum, ourBinary)
 	if !bytes.Equal(binHash.Sum(nil), ourBinHash.Sum(nil)) {
 		errf("failed to reproduce: file hashes don't match")
 		// if the build ID was explicitly set via a linker flag, don't
