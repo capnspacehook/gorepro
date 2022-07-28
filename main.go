@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -247,6 +248,7 @@ func mainErr() (int, error) {
 				for _, srcFile := range srcFiles {
 					mainSrcFiles = append(mainSrcFiles, srcFile.Name)
 				}
+				break
 			}
 		}
 	} else if info.Main.Version != "" && info.Main.Version != "(devel)" {
@@ -628,7 +630,7 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", fmt.Errorf(`could not find "git": %v`, err)
 	}
-	gitStatus, err := runCommand("git", "status", "--porcelain")
+	gitStatus, err := runCommand("git", "status", "--porcelain=v1")
 	if err != nil {
 		return "", fmt.Errorf("error getting Git status: %s %v", gitStatus, err)
 	}
@@ -639,7 +641,21 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 	if len(gitStatus) != 0 {
 		scanner := bufio.NewScanner(bytes.NewReader(gitStatus))
 		for scanner.Scan() {
-			if strings.HasSuffix(scanner.Text(), ".go") {
+			// separate status symbol from file path
+			// lines look like this:
+			//  M main.go
+			// ?? new.go
+			txt := scanner.Text()
+			if len(txt) < 4 {
+				return "", fmt.Errorf(`error parsing "git status --porcelain: line too short: %s`, txt)
+			}
+			_, file, ok := strings.Cut(txt[1:], " ")
+			if !ok {
+				return "", fmt.Errorf(`error parsing "git status --porcelain: line malformed: %s`, txt)
+			}
+
+			_, file = filepath.Split(file)
+			if strings.HasSuffix(file, ".go") || file == "go.mod" || file == "go.sum" {
 				addFailReason("there is at least one new or modified Go file in the local Git repo, source code may differ from what %q was built with",
 					binary,
 				)
