@@ -185,7 +185,7 @@ func main() {
 	if err != nil {
 		errf("%v", err)
 	}
-	if retCode == 2 {
+	if retCode == 2 && len(failReasons) != 0 {
 		warnf("reasons reproducing may have failed:")
 		for _, reason := range failReasons {
 			warnf(" - %s", reason)
