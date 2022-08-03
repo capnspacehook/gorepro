@@ -24,6 +24,15 @@ import (
 const (
 	cmdLinePkg      = "command-line-arguments"
 	goVersionPrefix = "go version go"
+
+	dockerGoBuildCache = "/go-build-cache"
+
+	dockerfileTmpl = `
+FROM golang:%s-alpine
+
+RUN apk add --update-cache git \
+	&& rm -rf /var/cache/apk/* \
+	&& git config --global --add safe.directory '*'`
 )
 
 var (
@@ -40,11 +49,6 @@ var (
 	verbose         bool
 
 	goEnvVars = []string{
-		"GOCACHE",
-		"GOMODCACHE",
-		"GOPATH",
-		"GOROOT",
-		"GOPROXY",
 		"HOME",
 		"PATH",
 	}
@@ -308,6 +312,7 @@ func mainErr() (int, error) {
 		return 1, fmt.Errorf("error parsing go version: %v", err)
 	}
 
+	// TODO: remove
 	goBin := goCmd
 	if binVersionStr != goVersionStr {
 		if goCommand != "" {
@@ -405,14 +410,16 @@ func mainErr() (int, error) {
 		}
 	}
 
+	var dockerInfo *dockerBuildInfo
 	if !trimpathFound {
-		setTrimpath, err := checkTrimpath(binVer, file, goBin, binary, info)
+		setTrimpath, di, err := checkTrimpath(binVer, file, goBin, binary, info)
 		if err != nil {
 			return 1, err
 		}
 		if setTrimpath {
 			buildArgs = append(buildArgs, "-trimpath")
 		}
+		dockerInfo = di
 	}
 
 	if vcsUsed != "" {
@@ -439,43 +446,13 @@ func mainErr() (int, error) {
 	if len(extraFlags) != 0 {
 		buildArgs = append(buildArgs, extraFlags...)
 	}
-
 	ourBinary := binary + ".repro"
-	sort.Strings(buildArgs)
-	buildArgs = append([]string{"build"}, buildArgs...)
-	if dryRun {
-		buildArgs = append(buildArgs, fmt.Sprintf(`-o="%s"`, ourBinary))
-	} else {
-		buildArgs = append(buildArgs, fmt.Sprintf("-o=%s", ourBinary))
-	}
-	if len(mainSrcFiles) != 0 {
-		buildArgs = append(buildArgs, mainSrcFiles...)
-	}
-
-	if dryRun {
-		sort.Strings(env)
-		fmt.Printf("%s %s %s\n", strings.Join(env, " "), goBin, strings.Join(buildArgs, " "))
-		return 0, nil
-	}
-
-	for _, envVar := range goEnvVars {
-		env = append(env, fmt.Sprintf("%s=%s", envVar, os.Getenv(envVar)))
-	}
-	if goDebug {
-		// this will print extremely detailed info on what inputs are going
-		// into build IDs, very useful for debugging why builds won't reproduce
-		env = append(env, "GODEBUG=gocachehash=1")
-	}
-
-	// compile a new binary
-	cmd := exec.Command(goBin, buildArgs...)
-	cmd.Env = env
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	verbosef("running command: %s", cmd)
-	err = cmd.Run()
+	err = attemptRepro(ourBinary, goBin, vcsUsed != "", binVer, env, buildArgs, mainSrcFiles, dockerInfo)
 	if err != nil {
-		return 1, fmt.Errorf("error building: %v", err)
+		return 1, err
+	}
+	if dryRun {
+		return 0, nil
 	}
 
 	// check that file sizes match
@@ -564,7 +541,14 @@ func mainErr() (int, error) {
 	return 0, nil
 }
 
-func checkTrimpath(binVer semver.Version, file *gore.GoFile, goBin, binary string, info *debug.BuildInfo) (bool, error) {
+type dockerBuildInfo struct {
+	goModCache       string
+	buildDir         string
+	localCodeDir     string
+	containerCodeDir string
+}
+
+func checkTrimpath(binVer semver.Version, file *gore.GoFile, goBin, binary string, info *debug.BuildInfo) (bool, *dockerBuildInfo, error) {
 	// Go 1.19+ add -trimpath to the build metadata, on earlier Go
 	// versions we can't always know for sure if it was passed
 	trimpathUnknown := true
@@ -573,7 +557,7 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, goBin, binary strin
 	}
 
 	// detect if -trimpath was passed by inspecting the binary's GOROOT
-	goroot, err := file.GetGoRoot()
+	goRoot, err := file.GetGoRoot()
 	if err != nil {
 		if errors.Is(err, gore.ErrNoGoRootFound) {
 			// if we don't know if -trimpath was set
@@ -581,43 +565,69 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, goBin, binary strin
 				addFailReason(`"-trimpath" may not have been set when building %q, it could not be detected from embedded build metadata`,
 					binary,
 				)
-				return true, nil
+				return true, nil, nil
 			}
 		} else {
-			return false, fmt.Errorf("error finding GOROOT of %q: %v", binary, err)
+			return false, nil, fmt.Errorf("error finding GOROOT of %q: %v", binary, err)
 		}
 	}
 	// GOROOT will be 'go' if -trimpath was set
-	if goroot == "go" {
-		return true, nil
+	if goRoot == "go" {
+		return true, nil, nil
 	}
-	// if we failed to find the GOROOT of the binary, skip this
-	if goroot != "" {
-		ourGoRoot, err := runCommand(goBin, "env", "GOROOT")
-		if err != nil {
-			return false, fmt.Errorf("error getting GOROOT of %s: %v", goBin, err)
-		}
-		if len(ourGoRoot) != 0 {
-			ourGoRoot = ourGoRoot[:len(ourGoRoot)-1]
-			if goroot != string(ourGoRoot) {
-				return false, fmt.Errorf(`"-trimpath" was not set when building %q, and %q was used as GOROOT while your GOROOT is %q`,
-					binary,
-					goroot,
-					ourGoRoot,
-				)
-			}
-		}
-
+	if goRoot != "" {
 		trimpathUnknown = false
 	}
 
-	// get the build dir the binary was built in
-	pkgs, err := file.GetPackages()
+	// find GOMODCACHE
+	findGoModCache := func(pkgs []*gore.Package) string {
+		for _, pkg := range pkgs {
+			name := pkg.Name
+			// get first part of package name
+			if strings.Contains(name, "/") {
+				s, _, ok := strings.Cut(pkg.Name, "/")
+				if !ok {
+					continue
+				}
+				name = s
+			}
+
+			// get dir before package name
+			path, _, ok := strings.Cut(pkg.Filepath, name)
+			if !ok {
+				continue
+			}
+			// package is stdlib, continue
+			if strings.HasPrefix(path, goRoot) {
+				continue
+			}
+
+			return path
+		}
+
+		return ""
+	}
+
+	thirdPartyPkgs, err := file.GetVendors()
 	if err != nil {
-		return false, fmt.Errorf("error getting packages of %q: %v", binary, err)
+		return false, nil, fmt.Errorf("error getting packages of %q: %v", binary, err)
+	}
+	goModCache := findGoModCache(thirdPartyPkgs)
+	if goModCache == "" {
+		unknownPkgs, err := file.GetUnknown()
+		if err != nil {
+			return false, nil, fmt.Errorf("error getting packages of %q: %v", binary, err)
+		}
+		goModCache = findGoModCache(unknownPkgs)
+	}
+
+	// get the build dir the binary was built in
+	mainPkgs, err := file.GetPackages()
+	if err != nil {
+		return false, nil, fmt.Errorf("error getting packages of %q: %v", binary, err)
 	}
 	var buildDir string
-	for _, pkg := range pkgs {
+	for _, pkg := range mainPkgs {
 		if pkg.Name == "main" {
 			buildDir = pkg.Filepath
 			break
@@ -626,25 +636,63 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, goBin, binary strin
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
-	if cwd != buildDir {
-		if trimpathUnknown {
-			addFailReason(`"-trimpath" may not have been set when building %q, and %q was used as the build directory while you are using %q`,
-				binary,
-				buildDir,
-				cwd,
-			)
-		} else {
-			return false, fmt.Errorf(`"-trimpath" was not set when building %q, and %q was used as the build directory while you are using %q`,
-				binary,
-				buildDir,
-				cwd,
-			)
+	if cwd != buildDir && trimpathUnknown {
+		addFailReason(`"-trimpath" may not have been set when building %q, and %q was used as the build directory while you are using %q`,
+			binary,
+			buildDir,
+			cwd,
+		)
+	}
+	localCodeDir := cwd
+
+	// figure out where module starts (where go.mod is) and mount accordingly
+	goMod, err := runCommand("go", "env", "GOMOD")
+	if err != nil {
+		return false, nil, fmt.Errorf(`error running "go env": %s %v`, goMod, err)
+	}
+	goMod = trimNewline(goMod)
+	const goModFilenameLen = len("/go.mod")
+	if goModStr := string(goMod); len(goModStr) > goModFilenameLen && goModStr != os.DevNull {
+		localCodeDir = goModStr[:len(goModStr)-goModFilenameLen]
+	}
+
+	containerCodeDir := buildDir
+	if localCodeDir != cwd {
+		sep := string(filepath.Separator)
+		buildDirParts := strings.Split(buildDir, sep)
+		cwdParts := strings.Split(cwd, sep)
+		for i := 1; i < min(len(buildDirParts), len(cwdParts)); i++ {
+			if buildDirParts[len(buildDirParts)-i] != cwdParts[len(cwdParts)-i] {
+				containerCodeDir = sep + filepath.Join(buildDirParts[:i-1]...)
+				break
+				// TODO: if buildDir doesn't change, probably should report error to user
+				// they probably aren't in correct dir
+			}
 		}
 	}
 
-	return false, nil
+	return false, &dockerBuildInfo{
+		goModCache:       goModCache,
+		buildDir:         buildDir,
+		localCodeDir:     localCodeDir,
+		containerCodeDir: containerCodeDir,
+	}, nil
+}
+
+func trimNewline(b []byte) []byte {
+	if len(b) != 0 && b[len(b)-1] == '\n' {
+		return b[:len(b)-1]
+	}
+	return b
+}
+
+func min(i, j int) int {
+	if i < j {
+		return i
+	}
+	return j
 }
 
 func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, bool, error) {
@@ -724,8 +772,7 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 	if err != nil {
 		return "", false, fmt.Errorf("error getting latest git commit: %s %v", gitShow, err)
 	}
-	// remove trailing newline
-	latestCommit := string(gitShow[:len(gitShow)-1])
+	latestCommit := string(trimNewline(gitShow))
 	var checkedOut bool
 	if vcsRev != latestCommit {
 		checkedOut = true
@@ -743,6 +790,178 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 	ok = true
 
 	return tempFileName, checkedOut, nil
+}
+
+func attemptRepro(out, goBin string, useVCS bool, binVer semver.Version, env, buildArgs, buildFiles []string, dockerInfo *dockerBuildInfo) error {
+	sort.Strings(buildArgs)
+	buildArgs = append([]string{"build"}, buildArgs...)
+
+	// if we're building inside a docker container we need to mount
+	// the dir of the original binary so we can write the new binary
+	// there
+	var outputDir string
+	if dockerInfo != nil {
+		dir, file := filepath.Split(out)
+		out = "/output/" + file
+		dir, err := filepath.Abs(dir)
+		if err != nil {
+			return fmt.Errorf("error getting absolute path of output directory: %v", err)
+		}
+		outputDir = dir
+	}
+	if dryRun {
+		buildArgs = append(buildArgs, fmt.Sprintf(`-o=%q`, out))
+	} else {
+		buildArgs = append(buildArgs, fmt.Sprintf("-o=%s", out))
+	}
+
+	if len(buildFiles) != 0 {
+		buildArgs = append(buildArgs, buildFiles...)
+	}
+	if goDebug {
+		// this will print extremely detailed info on what inputs are going
+		// into build IDs, very useful for debugging why builds won't reproduce
+		env = append(env, "GODEBUG=gocachehash=1")
+	}
+
+	if dockerInfo == nil && dryRun {
+		sort.Strings(env)
+		fmt.Printf("%s %s %s\n", strings.Join(env, " "), goBin, strings.Join(buildArgs, " "))
+		return nil
+	}
+
+	// TODO: use docker also if local go version is different and -trimpath is set
+	if dockerInfo != nil {
+		image := fmt.Sprintf("golang:%s-alpine", binVer)
+		// build a Go docker image with git if necessary
+		if useVCS {
+			image = fmt.Sprintf("gorepro-local:%s", binVer)
+			imageExists := true
+			var exitError *exec.ExitError
+			out, err := runCommand("docker", "image", "inspect", image)
+			if err != nil {
+				if errors.As(err, &exitError) && bytes.Contains(out, []byte("Error: No such image:")) {
+					imageExists = false
+				} else {
+					return fmt.Errorf(`error running "docker image inspect: %v`, err)
+				}
+			}
+
+			if !imageExists {
+				cmd := exec.Command("docker", "build", "-t", image, "-")
+				cmd.Stdin = strings.NewReader(fmt.Sprintf(dockerfileTmpl, binVer))
+				cmd.Stdout = os.Stderr
+				cmd.Stderr = os.Stderr
+				verbosef("running command: %s", cmd)
+				err := cmd.Run()
+				if err != nil {
+					return fmt.Errorf("error building docker container: %v", err)
+				}
+			}
+		}
+
+		if dryRun {
+			env = append(env, fmt.Sprintf("GOMODCACHE=%q", dockerInfo.goModCache))
+		} else {
+			env = append(env, fmt.Sprintf("GOMODCACHE=%s", dockerInfo.goModCache))
+		}
+		goEnvModCache, err := runCommand("go", "env", "GOMODCACHE")
+		if err != nil {
+			return fmt.Errorf(`error running "go env": %s %v`, goEnvModCache, err)
+		}
+		ourGoModCache := string(trimNewline(goEnvModCache))
+
+		if dryRun {
+			env = append(env, fmt.Sprintf("GOCACHE=%q", dockerGoBuildCache))
+		} else {
+			env = append(env, fmt.Sprintf("GOCACHE=%s", dockerGoBuildCache))
+		}
+		goEnvCache, err := runCommand("go", "env", "GOCACHE")
+		if err != nil {
+			return fmt.Errorf(`error running "go env": %s %v`, goEnvCache, err)
+		}
+		ourGoCache := string(trimNewline(goEnvCache))
+
+		sort.Strings(env)
+
+		if dryRun {
+			var cacheVolumes string
+			if ourGoModCache != "" {
+				cacheVolumes += fmt.Sprintf(" -v %q:%q", ourGoModCache, dockerInfo.goModCache)
+			}
+			if ourGoCache != "" {
+				cacheVolumes += fmt.Sprintf(" -v %q:%q", ourGoCache, dockerGoBuildCache)
+			}
+
+			fmt.Printf("docker run -e %s -w %q%s -v %q:%q -v %q:/output --rm %s go %s\n",
+				strings.Join(env, " -e "),
+				dockerInfo.buildDir,
+				cacheVolumes,
+				dockerInfo.localCodeDir,
+				dockerInfo.containerCodeDir,
+				outputDir,
+				image,
+				strings.Join(buildArgs, " "),
+			)
+			return nil
+		}
+
+		dockerArgs := []string{
+			"docker",
+			"run",
+		}
+		for _, envVar := range env {
+			dockerArgs = append(dockerArgs, "-e", envVar)
+		}
+		dockerArgs = append(dockerArgs, "-w", dockerInfo.buildDir)
+		if ourGoModCache != "" {
+			dockerArgs = append(
+				dockerArgs,
+				"-v",
+				fmt.Sprintf("%s:%s", ourGoModCache, dockerInfo.goModCache),
+			)
+		}
+		if ourGoCache != "" {
+			dockerArgs = append(
+				dockerArgs,
+				"-v",
+				fmt.Sprintf("%s:%s", ourGoCache, dockerGoBuildCache),
+			)
+		}
+		dockerArgs = append(
+			dockerArgs,
+			"-v",
+			fmt.Sprintf("%s:%s", dockerInfo.localCodeDir, dockerInfo.containerCodeDir),
+			"-v",
+			fmt.Sprintf("%s:/output", outputDir),
+		)
+		dockerArgs = append(
+			dockerArgs,
+			"--rm",
+			image,
+			"go",
+		)
+		buildArgs = append(dockerArgs, buildArgs...)
+	} else {
+		for _, envVar := range goEnvVars {
+			env = append(env, fmt.Sprintf("%s=%s", envVar, os.Getenv(envVar)))
+		}
+
+		buildArgs = append([]string{goBin}, buildArgs...)
+	}
+
+	// compile a new binary
+	cmd := exec.Command(buildArgs[0], buildArgs[1:]...)
+	cmd.Env = env
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	verbosef("running command: %s", cmd)
+	err := cmd.Run()
+	if err != nil {
+		return fmt.Errorf("error building: %v", err)
+	}
+
+	return nil
 }
 
 // onlyBuildIDDifferent returns true if the only bytes that differ
