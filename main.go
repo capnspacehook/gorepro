@@ -73,13 +73,14 @@ is not suitable for reproducing.
 
 If gorepro detects that a different version of Go was used to create
 the specified binary than what is currently installed, gorepro will
-install and use the appropriate Go version to reproduce the specified
-binary. Note that gorepro requires that binaries to reproduce be built
+build in a docker container with the correct Go version needed to
+reproduce the specified binary. Note that gorepro requires that
+binaries to reproduce be built
 with go1.18 or later as earlier versions do not embed build metadata.
 
 Gorepro requires that it be run in the directory where the source code
 for the specified binary exists. Depending on how the specified binary
-was built, Gorepro may require that it be run inside a cloned Git 
+was built, Gorepro may require that it be run inside a cloned Git
 repository that the specified binary was built from. The binary to
 reproduce is not required to be in any specific directory however.
 
@@ -208,7 +209,7 @@ func mainErr() (int, error) {
 
 	// ensure the go command is present
 	if _, err := exec.LookPath("go"); err != nil {
-		return 1, fmt.Errorf(`could not find "go": %v`, err)
+		return 1, fmt.Errorf(`error finding "go": %v`, err)
 	}
 
 	if flag.NArg() == 0 {
@@ -806,6 +807,10 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 
 	// TODO: use docker also if local go version is different and -trimpath is set
 	if dockerInfo != nil {
+		if _, err := exec.LookPath("docker"); err != nil {
+			return fmt.Errorf(`error finding "docker": %v`, err)
+		}
+
 		image := fmt.Sprintf("golang:%s-alpine", binVer)
 		// build a Go docker image with git if necessary
 		if useVCS {
