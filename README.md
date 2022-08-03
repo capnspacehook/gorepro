@@ -2,9 +2,14 @@
 
 `go install github.com/capnspacehook/gorepro@latest`
 
-Reproduce Go binaries by recreating and running the commands that produced them. Requires Go 1.18 or later.
+Reproduce Go binaries by recreating and running the commands that produced them.
 
 `gorepro [flags] binary`
+
+## Requirements
+
+Binaries to reproduce must have been built with Go 1.18 or later. Go 1.18 is also required to be present on the system you run gorepro on. Additionally,
+docker may be required depending on how the binary you want to reproduce was originally built.
 
 ## Purpose
 
@@ -15,7 +20,7 @@ Go makes it fairly easy to reproduce binaries, but it is still not always simple
 
 ## Mechanism
 
-Gorepro recreates the `go build` command that produced a specified binary by reading the embedded build metadata that Go 1.18 and newer includes by default. Gorepro will build in a docker container if the version of Go on your system wasn't what was used to build the specified binary. If the binary also has embedded version control system (VCS) information, gorepro will try to ensure your build environment is compatible with what the binary was created with. After the new binary is built, gorepro hashes both the original and new binaries with SHA-256 and compares the hashes to ensure they are the exact same.
+Gorepro recreates the `go build` command that produced a specified binary by reading the embedded build metadata that Go 1.18 and newer includes by default. Gorepro will build in a docker container if the version of Go on your system wasn't what was used to build the specified binary. If the binary also has embedded version control system (VCS) information, gorepro will try to ensure your build environment is compatible with what the binary was created with. After the new binary is built, gorepro hashes both the original and new binaries with SHA-256 and compares the hashes to ensure they are exactly the same.
 
 Gorepro assumes and requires that the directory it is run in contains the source code used to build the specified binary. The binary to reproduce does not need to be in any specified directory though.
 
