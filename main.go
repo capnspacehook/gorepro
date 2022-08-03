@@ -325,7 +325,7 @@ func mainErr() (int, error) {
 			}
 
 			if dryRun {
-				buildArgs = append(buildArgs, fmt.Sprintf(`%s="%s"`, setting.Key, setting.Value))
+				buildArgs = append(buildArgs, fmt.Sprintf(`%s=%q`, setting.Key, setting.Value))
 			} else {
 				buildArgs = append(buildArgs, fmt.Sprintf("%s=%s", setting.Key, setting.Value))
 			}
@@ -889,7 +889,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 				cacheVolumes += fmt.Sprintf(" -v %q:%q", ourGoCache, dockerGoBuildCache)
 			}
 
-			fmt.Printf("docker run -e %s -w %q%s -v %q:%q -v %q:/gorepro-output --rm  %s go %s\n",
+			fmt.Printf("docker run -e %s -w %q%s -v %q:%q -v %q:/gorepro-output --rm %s go %s\n",
 				strings.Join(env, " -e "),
 				dockerInfo.buildDir,
 				cacheVolumes,
