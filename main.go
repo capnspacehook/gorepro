@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -424,7 +425,11 @@ func mainErr() (int, error) {
 			return errCode, err
 		}
 		if tempFile != "" {
-			defer os.Remove(tempFile)
+			defer func() {
+				if err := os.Remove(tempFile); err != nil {
+					warnf("error removing temporary file: %v", err)
+				}
+			}()
 		}
 		if checkedOut {
 			if dryRun {
@@ -523,8 +528,8 @@ func mainErr() (int, error) {
 			return hashesDifferent, fmt.Errorf("error seeking to beginning of %q: %v", ourBinary, err)
 		}
 
-		// if the build IDs are different but the rest of the binaries
-		// match tell the user
+		// if the build IDs are different but the rest of the binaries'
+		// contents match tell the user
 		restSame, err := onlyBuildIDDifferent(binf, ourBinf, binBuildID, ourBinBuildID)
 		if err != nil {
 			return hashesDifferent, fmt.Errorf("error comparing binaries: %v", err)
@@ -558,7 +563,7 @@ type dockerBuildInfo struct {
 }
 
 func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string, info *debug.BuildInfo) (bool, *dockerBuildInfo, error) {
-	// Go 1.19+ add -trimpath to the build metadata, on earlier Go
+	// Go 1.19+ adds -trimpath to the build metadata, on earlier Go
 	// versions we can't always know for sure if it was passed
 	trimpathUnknown := true
 	if binVer.Minor >= 19 {
@@ -686,7 +691,11 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 	// it so the caller doesn't have to worry about it
 	defer func() {
 		if tempFileName != "" && !ok {
-			os.Remove(tempFileName)
+			defer func() {
+				if err := os.Remove(tempFileName); err != nil {
+					warnf("error removing temporary file: %v", err)
+				}
+			}()
 		}
 	}()
 
@@ -888,6 +897,20 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 			}
 		}
 
+		tempDir, err := os.MkdirTemp("", "*")
+		if err != nil {
+			return fmt.Errorf("error creating temporary directory: %v", err)
+		}
+		defer func() {
+			if err := os.RemoveAll(tempDir); err != nil {
+				if errors.Is(err, os.ErrPermission) {
+					removeCacheDirs(tempDir)
+				} else {
+					warnf("error removing temporary directory: %v", err)
+				}
+			}
+		}()
+
 		if dryRun {
 			env = append(env, fmt.Sprintf("GOMODCACHE=%q", dockerInfo.goModCache))
 		} else {
@@ -960,17 +983,27 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		dockerArgs = append(dockerArgs, "-w", dockerInfo.buildDir)
 		// TODO: COW bind mounts
 		if ourGoModCache != "" {
+			modCacheMount, err := buildOverlayMount(tempDir, "modcache", ourGoModCache, dockerInfo.goModCache)
+			if err != nil {
+				return err
+			}
+
 			dockerArgs = append(
 				dockerArgs,
-				"-v",
-				fmt.Sprintf("%s:%s", ourGoModCache, dockerInfo.goModCache),
+				"--mount",
+				modCacheMount,
 			)
 		}
 		if ourGoCache != "" {
+			cacheMount, err := buildOverlayMount(tempDir, "cache", ourGoCache, dockerGoBuildCache)
+			if err != nil {
+				return err
+			}
+
 			dockerArgs = append(
 				dockerArgs,
-				"-v",
-				fmt.Sprintf("%s:%s", ourGoCache, dockerGoBuildCache),
+				"--mount",
+				cacheMount,
 			)
 		}
 		dockerArgs = append(
@@ -983,6 +1016,8 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		dockerArgs = append(
 			dockerArgs,
 			"--rm",
+			"-u",
+			"1000:1000",
 			image,
 			"go",
 		)
@@ -1008,6 +1043,55 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 	}
 
 	return nil
+}
+
+// go mod cache dirs are set to be read only, have to change perms before
+// they can be removed
+func removeCacheDirs(tempDir string) {
+	err := filepath.WalkDir(tempDir, func(path string, de fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		if de.IsDir() {
+			return os.Chmod(path, 0770)
+		}
+		if err := os.Chmod(path, 0770); err != nil {
+			return err
+		}
+
+		return os.Remove(path)
+	})
+	if err != nil {
+		warnf("error removing temporary files: %v", err)
+		return
+	}
+	if err := os.RemoveAll(tempDir); err != nil {
+		warnf("error removing temporary directory: %v", err)
+	}
+}
+
+// build a docker volume mount that is copy-on-write to avoid messing
+// up local Go caches; docker will create directories as root sometimes
+// making "go clean" commands not work correctly
+// if someone knows a better/simpler way of doing this please let me know
+func buildOverlayMount(tempDir, prefix, src, dst string) (string, error) {
+	upperDir := filepath.Join(tempDir, prefix+"-upper")
+	if err := os.Mkdir(upperDir, 0755); err != nil {
+		return "", fmt.Errorf("error creating directory: %v", err)
+	}
+	workDir := filepath.Join(tempDir, prefix+"-work")
+	if err := os.Mkdir(workDir, 0755); err != nil {
+		return "", fmt.Errorf("error creating directory: %v", err)
+	}
+
+	return fmt.Sprintf(
+		`type=volume,dst=%s,volume-driver=local,volume-opt=type=overlay,"volume-opt=o=lowerdir=%s,upperdir=%s,workdir=%s",volume-opt=device=overlay2`,
+		dst,
+		src,
+		upperDir,
+		workDir,
+	), nil
 }
 
 // onlyBuildIDDifferent returns true if the only bytes that differ
