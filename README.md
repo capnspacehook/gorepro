@@ -1,5 +1,7 @@
 # gorepro
 
+![Tests](https://github.com/capnspacehook/gorepro/actions/workflows/test.yml/badge.svg)
+
 `go install github.com/capnspacehook/gorepro@latest`
 
 Reproduce Go binaries by recreating and running the commands that produced them.
