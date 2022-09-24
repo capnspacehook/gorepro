@@ -58,6 +58,7 @@ var (
 	additionalFlags string
 	dryRun          bool
 	goDebug         bool
+	noGoGC          bool
 	verbose         bool
 
 	goEnvVars = []string{
@@ -200,6 +201,10 @@ func runCommand(name string, arg ...string) ([]byte, error) {
 }
 
 func main() {
+	os.Exit(mainRetCode())
+}
+
+func mainRetCode() int {
 	retCode, err := mainErr()
 	if err != nil {
 		errf("%v", err)
@@ -222,7 +227,8 @@ func main() {
 			fmt.Print(sb.String())
 		}
 	}
-	os.Exit(retCode)
+
+	return retCode
 }
 
 func mainErr() (int, error) {
@@ -230,6 +236,7 @@ func mainErr() (int, error) {
 	flag.StringVar(&additionalFlags, "b", "", "extra build flags that are needed to reproduce but aren't detected, comma separated")
 	flag.BoolVar(&dryRun, "d", false, "print build commands instead of running them")
 	flag.BoolVar(&goDebug, "godebug", false, "print very verbose debug information from the Go compiler")
+	flag.BoolVar(&noGoGC, "no-go-gc", false, "trade memory usage for speed by disabling the garbage collector when compiling")
 	flag.BoolVar(&verbose, "v", false, "print commands being run and verbose information")
 	flag.Parse()
 
@@ -395,7 +402,7 @@ func mainErr() (int, error) {
 			vcsRev = setting.Value
 		case "CGO_ENABLED":
 			if setting.Value != "0" {
-				return errCode, fmt.Errorf("%s was built with cgo enabled, reproducing is possible but not supported by gorepro", binary)
+				return errCode, fmt.Errorf("%q was built with cgo enabled, reproducing is possible but not supported by gorepro", binary)
 			}
 			env = append(env, "CGO_ENABLED=0")
 		case "GOAMD64", "GOARCH", "GOARM", "GOEXPERIMENT", "GOMIPS", "GOMIPS64", "GOOS", "GOPPC64", "GOWASM":
@@ -505,7 +512,8 @@ func mainErr() (int, error) {
 	binSum, ourBinSum := binHash.Sum(nil), ourBinHash.Sum(nil)
 	infof("%x  %q", binSum, binary)
 	infof("%x  %q", ourBinSum, ourBinary)
-	if !bytes.Equal(binHash.Sum(nil), ourBinHash.Sum(nil)) {
+
+	if !bytes.Equal(binSum, ourBinSum) {
 		errf("failed to reproduce: file hashes don't match")
 		// if the build ID was explicitly set via a linker flag, don't
 		// check the differences between build IDs, they will be the same
@@ -855,6 +863,9 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		// into build IDs, very useful for debugging why builds won't reproduce
 		env = append(env, "GODEBUG=gocachehash=1")
 	}
+	if noGoGC {
+		env = append(env, "GOGC=off")
+	}
 
 	if dockerInfo == nil && dryRun {
 		sort.Strings(env)
@@ -897,6 +908,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 			}
 		}
 
+		// TODO: don't do when dryrunning
 		tempDir, err := os.MkdirTemp("", "*")
 		if err != nil {
 			return fmt.Errorf("error creating temporary directory: %v", err)
@@ -981,7 +993,6 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 			dockerArgs = append(dockerArgs, "-e", envVar)
 		}
 		dockerArgs = append(dockerArgs, "-w", dockerInfo.buildDir)
-		// TODO: COW bind mounts
 		if ourGoModCache != "" {
 			modCacheMount, err := buildOverlayMount(tempDir, "modcache", ourGoModCache, dockerInfo.goModCache)
 			if err != nil {
@@ -1016,8 +1027,6 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		dockerArgs = append(
 			dockerArgs,
 			"--rm",
-			"-u",
-			"1000:1000",
 			image,
 			"go",
 		)

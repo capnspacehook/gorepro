@@ -1,0 +1,19 @@
+# caddy has a unique build setup that gorepro can't detect, but it hits
+# code paths other projects do not
+# caddy 2.6.0+ has a slightly more involved build setup process, so for
+# now we test against 2.5.2
+wget https://github.com/caddyserver/caddy/releases/download/v2.5.2/caddy_2.5.2_linux_amd64.tar.gz
+gunzip caddy_2.5.2_linux_amd64.tar.gz
+untar caddy_2.5.2_linux_amd64.tar
+exec git clone https://github.com/caddyserver/caddy caddy-src
+cd caddy-src
+exec git checkout v2.5.2
+mkdir caddy-build
+cp cmd/caddy/main.go caddy-build/
+cd caddy-build
+exec go mod init caddy
+exec go mod edit -require=github.com/caddyserver/caddy/v2@v2.5.2
+exec go mod tidy
+
+gorepro -no-go-gc -v ../../caddy
+sha256cmp ../../caddy ../../caddy.repro

@@ -1,0 +1,13 @@
+wget https://github.com/gohugoio/hugo/releases/download/v0.104.0/hugo_0.104.0_linux-arm.tar.gz
+gunzip hugo_0.104.0_linux-arm.tar.gz
+untar hugo_0.104.0_linux-arm.tar
+exec git clone https://github.com/gohugoio/hugo.git hugo-src
+cd hugo-src
+
+# can't figure out why some projects are able to be almost reproduced,
+# but nontheless it's good to test this behavior
+! gorepro -no-go-gc -v ../hugo
+stdout 'was built in a dirty Git repo but the local Git repo is clean; creating a temporary file to make local Git repo dirty'
+stdout 'checking out correct commit'
+stdout 'failed to reproduce: file hashes don''t match'
+stdout 'however, only the build ID differs between binaries, binaries are almost the same'
