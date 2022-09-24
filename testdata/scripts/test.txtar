@@ -16,6 +16,8 @@ mv mainfile.go main.go
 stdout '"out" was built by passing "mainfile.go" to "go build", but that file couldn''t be found; rerun gorepro in the directory with "mainfile.go"'
 
 exec git init
+exec git config user.name me
+exec git config user.email me@me.me
 exec git add *
 exec git commit -m 'commit'
 exec go build -o out
