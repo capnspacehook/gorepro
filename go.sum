@@ -3,8 +3,8 @@ github.com/blang/semver/v4 v4.0.0/go.mod h1:IbckMUScFkM3pff0VJDNKRiT6TG/YpiHIM2y
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/fatih/color v1.14.1 h1:qfhVLaG5s+nCROl1zJsZRxFeYrHLqWroPOQ8BWiNb4w=
 github.com/fatih/color v1.14.1/go.mod h1:2oHN61fhTpgcxD3TSWCgKDiH1+x4OiDVVGH8WlgGZGg=
-github.com/goretk/gore v0.10.1-0.20220520085255-141f38f24c76 h1:iGv25PqC5pVHhxhzglzEzFedADmwFpKfYvDdtPYoRgE=
-github.com/goretk/gore v0.10.1-0.20220520085255-141f38f24c76/go.mod h1:2Q3O5dhIsk1RP7IcaMBwowS4TcLgGItkCLNGBPN2Lh8=
+github.com/goretk/gore v0.11.0 h1:yW5uzyZd3J0MVXm1xA7KLZLKvhgiR7IJv4at893/1LM=
+github.com/goretk/gore v0.11.0/go.mod h1:wZt6TJIR3gZJplzAApeIXA1BjQGd3PKbc2XincS3TAc=
 github.com/mattn/go-colorable v0.1.13 h1:fFA4WZxdEF4tXPZVKMLwD8oUnCTTo08duU7wxecdEvA=
 github.com/mattn/go-colorable v0.1.13/go.mod h1:7S9/ev0klgBDR4GtXTXX8a3vIGJpMovkB8vQcUbaXHg=
 github.com/mattn/go-isatty v0.0.16/go.mod h1:kYGgaQfpe5nmfYZH+SKPsOc2e4SrIfOl2e/yFXSvRLM=

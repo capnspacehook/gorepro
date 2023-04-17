@@ -5,7 +5,7 @@ go 1.18
 require (
 	github.com/blang/semver/v4 v4.0.0
 	github.com/fatih/color v1.14.1
-	github.com/goretk/gore v0.10.1-0.20220520085255-141f38f24c76
+	github.com/goretk/gore v0.11.0
 	github.com/rogpeppe/go-internal v1.9.0
 )
 
