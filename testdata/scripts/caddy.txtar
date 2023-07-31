@@ -3,6 +3,7 @@
 # caddy 2.6.0+ has a slightly more involved build setup process, so for
 # now we test against 2.5.2
 wget https://github.com/caddyserver/caddy/releases/download/v2.5.2/caddy_2.5.2_linux_amd64.tar.gz
+sha256check caddy_2.5.2_linux_amd64.tar.gz 641908bbf6f13ee69f3c445a44012d0c3327462c00a1d47fb40f07ce5d00e31b
 gunzip caddy_2.5.2_linux_amd64.tar.gz
 untar caddy_2.5.2_linux_amd64.tar
 exec git clone https://github.com/caddyserver/caddy caddy-src
@@ -15,5 +16,5 @@ exec go mod init caddy
 exec go mod edit -require=github.com/caddyserver/caddy/v2@v2.5.2
 exec go mod tidy
 
-gorepro -no-go-gc -v ../../caddy
+exec gorepro -no-go-gc -v ../../caddy
 sha256cmp ../../caddy ../../caddy.repro

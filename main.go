@@ -378,7 +378,7 @@ func mainErr() (int, error) {
 			}
 		case "-compiler":
 			if setting.Value != "gc" {
-				// TODO: test with gccgo
+				//lint:ignore ST1005 'Go' should be capitalized consistently
 				return errCode, fmt.Errorf("Go compiler %s was used to build %s, only the building with the official Go compiler gc is supported",
 					setting.Value,
 					binary,
@@ -887,7 +887,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 			var exitError *exec.ExitError
 			out, err := runCommand("docker", "image", "inspect", image)
 			if err != nil {
-				if errors.As(err, &exitError) && bytes.Contains(out, []byte("Error: No such image:")) {
+				if errors.As(err, &exitError) && bytes.Contains(out, []byte("No such image:")) {
 					imageExists = false
 				} else {
 					return fmt.Errorf(`error running "docker image inspect: %v`, err)
@@ -1063,9 +1063,9 @@ func removeCacheDirs(tempDir string) {
 		}
 
 		if de.IsDir() {
-			return os.Chmod(path, 0770)
+			return os.Chmod(path, 0o770)
 		}
-		if err := os.Chmod(path, 0770); err != nil {
+		if err := os.Chmod(path, 0o770); err != nil {
 			return err
 		}
 
@@ -1086,11 +1086,11 @@ func removeCacheDirs(tempDir string) {
 // if someone knows a better/simpler way of doing this please let me know
 func buildOverlayMount(tempDir, prefix, src, dst string) (string, error) {
 	upperDir := filepath.Join(tempDir, prefix+"-upper")
-	if err := os.Mkdir(upperDir, 0755); err != nil {
+	if err := os.Mkdir(upperDir, 0o755); err != nil {
 		return "", fmt.Errorf("error creating directory: %v", err)
 	}
 	workDir := filepath.Join(tempDir, prefix+"-work")
-	if err := os.Mkdir(workDir, 0755); err != nil {
+	if err := os.Mkdir(workDir, 0o755); err != nil {
 		return "", fmt.Errorf("error creating directory: %v", err)
 	}
 

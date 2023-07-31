@@ -1,18 +1,18 @@
 exec go install golang.org/dl/go1.17@latest
 exec go1.17 download
 exec go1.17 build -o out
-! gorepro out
+! exec gorepro out
 stdout 'was built with go1.17, only go1.18 or newer embeds build metadata that is required by gorepro'
 
 exec go build -o out
-! gorepro out
+! exec gorepro out
 stdout '"out" was built with cgo enabled, reproducing is possible but not supported by gorepro'
 
 env CGO_ENABLED=0
 mv main.go mainfile.go
 exec go build -o out mainfile.go
 mv mainfile.go main.go
-! gorepro out
+! exec gorepro out
 stdout '"out" was built by passing "mainfile.go" to "go build", but that file couldn''t be found; rerun gorepro in the directory with "mainfile.go"'
 
 exec git init
@@ -23,16 +23,16 @@ exec git commit -m 'commit'
 exec go build -o out
 
 cp out outcpy
-! gorepro out
+! exec gorepro out
 stdout '"out" was built in a clean Git repo, and the local Git repo isn''t clean; reproducing will fail'
 
 exec go build -trimpath -o out
 cp other other.go
-! gorepro out
+! exec gorepro out
 stdout 'there is at least one new or modified Go file in the local Git repo, source code may differ from what "out" was built with'
 
 rm .git
-! gorepro out
+! exec gorepro out
 stdout '"out" was built in a Git repo, but gorepro wasn''t run in one; reproducing will fail'
 
 -- go.mod --

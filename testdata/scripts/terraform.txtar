@@ -1,9 +1,10 @@
 wget https://releases.hashicorp.com/terraform/1.3.0/terraform_1.3.0_linux_amd64.zip
+sha256check terraform_1.3.0_linux_amd64.zip 380ca822883176af928c80e5771d1c0ac9d69b13c6d746e6202482aedde7d457
 unzip terraform_1.3.0_linux_amd64.zip
 exec git clone https://github.com/hashicorp/terraform.git terraform-src
 cd terraform-src
 
-gorepro -no-go-gc -v ../terraform
+exec gorepro -no-go-gc -v ../terraform
 stdout 'was built in a dirty Git repo but the local Git repo is clean; creating a temporary file to make local Git repo dirty'
 stdout 'checking out correct commit'
 sha256cmp ../terraform ../terraform.repro
