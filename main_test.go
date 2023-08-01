@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -28,11 +29,12 @@ func TestScripts(t *testing.T) {
 	params := testscript.Params{
 		Dir: "testdata/scripts",
 		Cmds: map[string]func(t *testscript.TestScript, neg bool, args []string){
-			"gunzip":    gunzip,
-			"sha256cmp": sha256cmp,
-			"untar":     untar,
-			"unzip":     unzip,
-			"wget":      wget,
+			"sha256check": sha256check,
+			"gunzip":      gunzip,
+			"sha256cmp":   sha256cmp,
+			"untar":       untar,
+			"unzip":       unzip,
+			"wget":        wget,
 		},
 		Setup: func(e *testscript.Env) error {
 			// $HOME isn't set inside testscripts for some reason?
@@ -43,6 +45,7 @@ func TestScripts(t *testing.T) {
 
 			return nil
 		},
+		RequireExplicitExec: true,
 	}
 
 	testscript.Run(t, params)
@@ -82,6 +85,34 @@ func gunzip(t *testscript.TestScript, neg bool, args []string) {
 
 	if _, err := io.Copy(uFile, r); err != nil {
 		t.Fatalf("error uncompressing file: %v", err)
+	}
+}
+
+func sha256check(t *testscript.TestScript, neg bool, args []string) {
+	if len(args) != 2 {
+		t.Fatalf("usage: sha256check file hash")
+	}
+	if neg {
+		t.Fatalf("sha256check: negation not supported")
+	}
+
+	h := sha256.New()
+	file, err := os.Open(t.MkAbs(args[0]))
+	if err != nil {
+		t.Fatalf("error opening file: %v", err)
+	}
+	defer file.Close()
+
+	if _, err = io.Copy(h, file); err != nil {
+		t.Fatalf("error hashing file: %v", err)
+	}
+	checkHash, err := hex.DecodeString(args[1])
+	if err != nil {
+		t.Fatalf("error decoding hash: %v", err)
+	}
+
+	if !bytes.Equal(h.Sum(nil), checkHash) {
+		t.Fatalf("hashes not equal")
 	}
 }
 
@@ -156,7 +187,7 @@ func untar(t *testscript.TestScript, neg bool, args []string) {
 			t.Fatalf("tarred file truncated: %v", err)
 		}
 
-		if err := file.Chmod(0777); err != nil {
+		if err := file.Chmod(0o777); err != nil {
 			t.Fatalf("error changing permissions of file: %v", err)
 		}
 	}
@@ -196,7 +227,7 @@ func unzip(t *testscript.TestScript, neg bool, args []string) {
 			t.Fatalf("zipped file truncated: %v", err)
 		}
 
-		if err := file.Chmod(0777); err != nil {
+		if err := file.Chmod(0o777); err != nil {
 			t.Fatalf("error changing permissions of file: %v", err)
 		}
 	}

@@ -1,4 +1,4 @@
-name: Test
+name: Vulnerability scan
 
 on:
   push:
@@ -7,17 +7,15 @@ on:
   pull_request:
     branches:
       - "*"
+  schedule:
+    - cron: "00 13 * * 1"
 
   workflow_dispatch: {}
 
 jobs:
-  race-test:
-    timeout-minutes: 25
-    strategy:
-      matrix:
-        # test with minimum supported and latest version of Go
-        go-version: [1.18.x, 1.20.x]
+  govulncheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -30,14 +28,11 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v4
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: ${{ env.GO_VERSION }}.x
           check-latest: true
           cache: true
 
-      - name: Ensure main package builds
+      - name: Scan for known vulnerable dependencies
         run: |
-          go build
-
-      - name: Run tests
-        run: |
-          go test -race -timeout 20m ./...
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
