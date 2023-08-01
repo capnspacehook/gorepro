@@ -46,6 +46,7 @@ func TestScripts(t *testing.T) {
 			return nil
 		},
 		RequireExplicitExec: true,
+		RequireUniqueNames:  true,
 	}
 
 	testscript.Run(t, params)
