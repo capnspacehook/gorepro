@@ -4,6 +4,11 @@ on:
   push:
     paths:
       - ".github/workflows/*"
+  pull_request:
+    branches:
+      - "*"
+    paths:
+      - ".github/workflows/*"
 
   workflow_dispatch: {}
 
