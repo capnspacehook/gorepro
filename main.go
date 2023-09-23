@@ -131,7 +131,8 @@ func verbosef(format string, a ...any) {
 	if !verbose {
 		return
 	}
-	infof(format, a...)
+	infoColor.Fprintf(os.Stderr, format, a...)
+	infoColor.Fprintln(os.Stderr)
 }
 
 func infof(format string, a ...any) {
