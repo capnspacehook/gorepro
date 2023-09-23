@@ -443,7 +443,7 @@ func mainErr() (int, error) {
 				defer fmt.Println("git checkout -q -")
 			} else {
 				defer func() {
-					runCommand("git", "checkout", "-q", "-")
+					_, _ = runCommand("git", "checkout", "-q", "-")
 				}()
 			}
 		}

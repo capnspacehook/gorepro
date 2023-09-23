@@ -8,42 +8,8 @@ on:
       - "v*.*.*"
 
 jobs:
-  release-binary:
-    runs-on: ubuntu-latest
-    if: github.ref_type == 'tag'
-    timeout-minutes: 15
+  release-binaries:
     permissions:
-      id-token: write
       contents: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0
-
-      - name: Export constant environmental variables
-        uses: cardinalby/export-env-action@v2
-        with:
-          envFile: .github/workflows/constants.env
-
-      - name: Checkout tags
-        run: git fetch --force --tags
-
-      - name: Install Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: ${{ env.GO_VERSION }}.x
-          check-latest: true
-          cache: true
-
-      - name: Install cosign
-        uses: sigstore/cosign-installer@main
-
-      - name: Build and release with goreleaser
-        uses: goreleaser/goreleaser-action@v5
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          distribution: goreleaser
-          version: latest
-          args: release
+      id-token: write
+    uses: capnspacehook/go-workflows/.github/workflows/release-binaries.yml@master
