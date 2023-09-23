@@ -403,7 +403,7 @@ func mainErr() error {
 	var vcsModified bool
 	for _, setting := range info.Settings {
 		switch setting.Key {
-		case "-asmflags", "-gcflags", "-ldflags", "-tags":
+		case "-asmflags", "-buildmode", "-gcflags", "-ldflags", "-tags":
 			if setting.Key == "ldflags" {
 				if strings.Contains(setting.Value, "-buildid") {
 					buildIDExplicitlySet = true
@@ -447,6 +447,7 @@ func mainErr() error {
 			}
 		case "vcs.revision":
 			vcsRev = setting.Value
+			buildArgs = append(buildArgs, "-buildvcs=true")
 		case "CGO_ENABLED":
 			if setting.Value != "0" {
 				return fmt.Errorf("%q was built with CGO enabled, reproducing is possible but not supported by gorepro", binary)
