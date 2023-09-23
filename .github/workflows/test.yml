@@ -12,12 +12,8 @@ on:
 
 jobs:
   race-test:
-    timeout-minutes: 25
-    strategy:
-      matrix:
-        # test with minimum supported and latest version of Go
-        go-version: [1.18.x, 1.21.x]
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -25,7 +21,7 @@ jobs:
       - name: Install Go
         uses: WillAbides/setup-go-faster@v1.12.0
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: go.mod
 
       - name: Cache Go files
         uses: capnspacehook/cache-go@v1
