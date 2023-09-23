@@ -16,23 +16,19 @@ jobs:
     strategy:
       matrix:
         # test with minimum supported and latest version of Go
-        go-version: [1.18.x, 1.20.x]
+        go-version: [1.18.x, 1.21.x]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Export constant environmental variables
-        uses: cardinalby/export-env-action@v2
-        with:
-          envFile: .github/workflows/constants.env
+        uses: actions/checkout@v4
 
       - name: Install Go
-        uses: actions/setup-go@v4
+        uses: WillAbides/setup-go-faster@v1.12.0
         with:
           go-version: ${{ matrix.go-version }}
-          check-latest: true
-          cache: true
+
+      - name: Cache Go files
+        uses: capnspacehook/cache-go@v1
 
       - name: Ensure main package builds
         run: |
