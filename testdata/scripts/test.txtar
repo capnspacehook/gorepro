@@ -4,9 +4,10 @@ exec go1.17 build -o out
 ! exec gorepro out
 stdout 'was built with go1.17, only go1.18 or newer embeds build metadata that is required by gorepro'
 
+env CGO_ENABLED=1
 exec go build -o out
 ! exec gorepro out
-stdout '"out" was built with cgo enabled, reproducing is possible but not supported by gorepro'
+stdout '"out" was built with CGO enabled, reproducing is possible but not supported by gorepro'
 
 env CGO_ENABLED=0
 mv main.go mainfile.go
@@ -30,6 +31,7 @@ exec go build -trimpath -o out
 cp other other.go
 ! exec gorepro out
 stdout 'there is at least one new or modified Go file in the local Git repo, source code may differ from what "out" was built with'
+stdout 'Go <= 1.21 was used to build "out" and "-trimpath" was set, if "-ldflags" was set at build time it won''t be in embedded build data'
 
 rm .git
 ! exec gorepro out

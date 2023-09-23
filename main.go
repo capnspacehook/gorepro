@@ -240,6 +240,10 @@ func mainErr() (int, error) {
 	flag.BoolVar(&verbose, "v", false, "print commands being run and verbose information")
 	flag.Parse()
 
+	if dryRun && verbose {
+		return errCode, fmt.Errorf("-d and -v are mutually exclusive")
+	}
+
 	var extraFlags []string
 	if len(additionalFlags) != 0 {
 		extraFlags = strings.Split(additionalFlags, ",")
@@ -386,6 +390,14 @@ func mainErr() (int, error) {
 			}
 		case "-trimpath":
 			trimpathFound = true
+			if binVer.Minor <= 21 {
+				addFailReason(
+					false,
+					`Go <= 1.21 was used to build %q and "-trimpath" was set, if "-ldflags" was set at build time it won't be in embedded build data`,
+					binary,
+				)
+			}
+
 			buildArgs = append(buildArgs, setting.Key)
 		case "vcs":
 			vcsUsed = setting.Value
@@ -402,7 +414,7 @@ func mainErr() (int, error) {
 			vcsRev = setting.Value
 		case "CGO_ENABLED":
 			if setting.Value != "0" {
-				return errCode, fmt.Errorf("%q was built with cgo enabled, reproducing is possible but not supported by gorepro", binary)
+				return errCode, fmt.Errorf("%q was built with CGO enabled, reproducing is possible but not supported by gorepro", binary)
 			}
 			env = append(env, "CGO_ENABLED=0")
 		case "GOAMD64", "GOARCH", "GOARM", "GOEXPERIMENT", "GOMIPS", "GOMIPS64", "GOOS", "GOPPC64", "GOWASM":
@@ -873,7 +885,6 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		return nil
 	}
 
-	// TODO: use docker also if local go version is different and -trimpath is set
 	if dockerInfo != nil {
 		if _, err := exec.LookPath("docker"); err != nil {
 			return fmt.Errorf(`error finding "docker": %v`, err)
