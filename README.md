@@ -10,8 +10,8 @@ Reproduce Go binaries by recreating and running the commands that produced them.
 
 ## Requirements
 
-Binaries to reproduce must have been built with Go 1.18 or later. Go 1.18 is also required to be present on the system you run gorepro on. Additionally,
-docker may be required depending on how the binary you want to reproduce was originally built.
+Binaries to reproduce must have been built with Go 1.18 or later. The latest stable release of Go is also required to be present on the system you will run gorepro on.
+Additionally, Docker may be required depending on how the binary you want to reproduce was originally built.
 
 ## Purpose
 
