@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"debug/buildinfo"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -42,9 +44,9 @@ RUN apk add --update-cache git \
 const (
 	successCode int = iota
 	errCode
-	sizeDifferent
-	hashesDifferent
-	buildIDSame
+	sizeDifferentCode
+	hashesDifferentCode
+	buildIDSameCode
 )
 
 var (
@@ -67,11 +69,6 @@ var (
 
 	failReasons []failReason
 )
-
-type failReason struct {
-	reason          string
-	ifSizeDifferent bool
-}
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `
@@ -114,6 +111,11 @@ gorepro accepts the following flags:
 
 For more information, see https://github.com/capnspacehook/gorepro.
 `[1:])
+}
+
+type failReason struct {
+	reason          string
+	ifSizeDifferent bool
 }
 
 func addFailReason(ifSizeDifferent bool, format string, a ...any) {
@@ -176,18 +178,18 @@ func parseVersion(version string) (semver.Version, error) {
 	return ver, err
 }
 
-func getBuildID(file string) ([]byte, error) {
-	return runCommand("go", "tool", "buildid", file)
+func getBuildID(ctx context.Context, file string) ([]byte, error) {
+	return runCommand(ctx, "go", "tool", "buildid", file)
 }
 
-func runCommand(name string, arg ...string) ([]byte, error) {
+func runCommand(ctx context.Context, name string, arg ...string) ([]byte, error) {
 	var buf bytes.Buffer
 	var w io.Writer = &buf
 	if verbose {
 		w = io.MultiWriter(w, os.Stderr)
 	}
 
-	cmd := exec.Command(name, arg...)
+	cmd := exec.CommandContext(ctx, name, arg...)
 	verbosef("running command: %s", cmd)
 	cmd.Stdout = w
 	cmd.Stderr = w
@@ -203,12 +205,43 @@ func main() {
 	os.Exit(mainRetCode())
 }
 
-func mainRetCode() int {
-	retCode, err := mainErr()
-	if err != nil {
-		errf("%v", err)
+type errJustExit int
+
+func (e errJustExit) Error() string { return fmt.Sprintf("exit: %d", e) }
+
+type errWithRetCode struct {
+	error
+
+	code int
+}
+
+func errWithCode(code int, err error) error {
+	return errWithRetCode{
+		error: err,
+		code:  code,
 	}
-	if retCode > errCode && len(failReasons) != 0 {
+}
+
+func mainRetCode() int {
+	err := mainErr()
+	if err == nil {
+		return successCode
+	}
+
+	var errRetCode *errJustExit
+	var errAndRetCode *errWithRetCode
+	var retCode int
+	if errors.As(err, &errRetCode) {
+		retCode = int(*errRetCode)
+	} else if errors.As(err, &errAndRetCode) {
+		retCode = errAndRetCode.code
+		errf("error %v", errAndRetCode)
+	} else {
+		errf("error %v", err)
+		retCode = errCode
+	}
+
+	if retCode > successCode && len(failReasons) != 0 {
 		var sb strings.Builder
 		var reasonsListed int
 		sb.WriteString(warnColor.Sprint("reasons reproducing may have failed:\n"))
@@ -216,7 +249,7 @@ func mainRetCode() int {
 			// skip warnings that only apply if the produced binary has
 			// a different size than the specified binary and it has
 			// the same size
-			if retCode != sizeDifferent && reason.ifSizeDifferent {
+			if retCode != sizeDifferentCode && reason.ifSizeDifferent {
 				continue
 			}
 			sb.WriteString(warnColor.Sprintf(" - %s\n", reason.reason))
@@ -230,7 +263,7 @@ func mainRetCode() int {
 	return retCode
 }
 
-func mainErr() (int, error) {
+func mainErr() error {
 	flag.Usage = usage
 	flag.StringVar(&additionalFlags, "b", "", "extra build flags that are needed to reproduce but aren't detected, comma separated")
 	flag.BoolVar(&dryRun, "d", false, "print build commands instead of running them")
@@ -240,7 +273,7 @@ func mainErr() (int, error) {
 	flag.Parse()
 
 	if dryRun && verbose {
-		return errCode, fmt.Errorf("-d and -v are mutually exclusive")
+		return fmt.Errorf("-d and -v are mutually exclusive")
 	}
 
 	var extraFlags []string
@@ -250,23 +283,26 @@ func mainErr() (int, error) {
 
 	// ensure the go command is present
 	if _, err := exec.LookPath("go"); err != nil {
-		return errCode, fmt.Errorf(`error finding "go": %w`, err)
+		return fmt.Errorf(`finding "go": %w`, err)
 	}
 
 	if flag.NArg() == 0 {
 		usage()
-		return errCode, nil
+		return errJustExit(errCode)
 	} else if flag.NArg() > 1 {
 		fmt.Fprintf(os.Stderr, "only one binary can be reproduced at a time\n\nusage:\n\n")
 		usage()
-		return errCode, nil
+		return errJustExit(errCode)
 	}
 	binary := flag.Arg(0)
+
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
 
 	// read the binary's build info
 	info, err := buildinfo.ReadFile(binary)
 	if err != nil {
-		return errCode, fmt.Errorf("parsing build metadata: %w", err)
+		return fmt.Errorf("parsing build metadata: %w", err)
 	}
 	binVersionStr := info.GoVersion
 	if len(binVersionStr) > 2 {
@@ -274,17 +310,17 @@ func mainErr() (int, error) {
 	}
 	binVer, err := parseVersion(binVersionStr)
 	if err != nil {
-		return errCode, fmt.Errorf("parsing go version of %q: %w", binary, err)
+		return fmt.Errorf("parsing go version of %q: %w", binary, err)
 	}
 	// check if binary can be reproduced
 	if binVer.Minor < 18 {
-		return errCode, fmt.Errorf("%q was built with go%s, only go1.18 or newer embeds build metadata that is required by gorepro",
+		return fmt.Errorf("%q was built with go%s, only go1.18 or newer embeds build metadata that is required by gorepro",
 			binary,
 			binVersionStr,
 		)
 	}
 	if len(info.Settings) == 0 {
-		return errCode, fmt.Errorf("no build metadata present in %q, reproducing is possible but not supported by gorepro", binary)
+		return fmt.Errorf("no build metadata present in %q, reproducing is possible but not supported by gorepro", binary)
 	}
 
 	if binVer.Minor < 20 {
@@ -298,7 +334,7 @@ func mainErr() (int, error) {
 
 	file, err := gore.Open(binary)
 	if err != nil {
-		return errCode, err
+		return err
 	}
 	defer file.Close()
 
@@ -308,7 +344,7 @@ func mainErr() (int, error) {
 	if info.Path == cmdLinePkg {
 		p, err := file.GetPackages()
 		if err != nil {
-			return errCode, err
+			return err
 		}
 		for _, pkg := range p {
 			if pkg.Name == "main" {
@@ -320,7 +356,7 @@ func mainErr() (int, error) {
 			}
 		}
 	} else if info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return errCode, fmt.Errorf(`%q was built using "go install", reproducing is possible but not supported by gorepro`, binary)
+		return fmt.Errorf(`%q was built using "go install", reproducing is possible but not supported by gorepro`, binary)
 	}
 
 	// ensure main module source files exist
@@ -328,31 +364,31 @@ func mainErr() (int, error) {
 		for _, file := range mainSrcFiles {
 			if _, err := os.Stat(file); err != nil {
 				if errors.Is(err, os.ErrNotExist) {
-					return errCode, fmt.Errorf(`%q was built by passing %q to "go build", but that file couldn't be found; rerun gorepro in the directory with %q`,
+					return fmt.Errorf(`%q was built by passing %q to "go build", but that file couldn't be found; rerun gorepro in the directory with %q`,
 						binary,
 						file,
 						file,
 					)
 				}
-				return errCode, fmt.Errorf("reading build file: %w", err)
+				return fmt.Errorf("reading build file: %w", err)
 			}
 		}
 	}
 
 	// get the version of the go command, we may have to download
 	// a different version if it's not available
-	out, err := runCommand("go", "version")
+	out, err := runCommand(ctx, "go", "version")
 	if err != nil {
-		return errCode, fmt.Errorf(`error running "go version": %w`, err)
+		return fmt.Errorf(`running "go version": %w`, err)
 	}
 
 	if len(out) < len(goVersionPrefix) {
-		return errCode, fmt.Errorf(`malformed "go version" output`)
+		return fmt.Errorf(`malformed "go version" output`)
 	}
 	out = out[len(goVersionPrefix):]
 	i := bytes.IndexByte(out, ' ')
 	if i == -1 {
-		return errCode, fmt.Errorf(`malformed "go version" output`)
+		return fmt.Errorf(`malformed "go version" output`)
 	}
 	goVersionStr := string(out[:i])
 
@@ -382,7 +418,7 @@ func mainErr() (int, error) {
 		case "-compiler":
 			if setting.Value != "gc" {
 				//lint:ignore ST1005 'Go' should be capitalized consistently
-				return errCode, fmt.Errorf("Go compiler %s was used to build %s, only the building with the official Go compiler gc is supported",
+				return fmt.Errorf("Go compiler %s was used to build %s, only the building with the official Go compiler gc is supported",
 					setting.Value,
 					binary,
 				)
@@ -413,7 +449,7 @@ func mainErr() (int, error) {
 			vcsRev = setting.Value
 		case "CGO_ENABLED":
 			if setting.Value != "0" {
-				return errCode, fmt.Errorf("%q was built with CGO enabled, reproducing is possible but not supported by gorepro", binary)
+				return fmt.Errorf("%q was built with CGO enabled, reproducing is possible but not supported by gorepro", binary)
 			}
 			env = append(env, "CGO_ENABLED=0")
 		case "GOAMD64", "GOARCH", "GOARM", "GOEXPERIMENT", "GOMIPS", "GOMIPS64", "GOOS", "GOPPC64", "GOWASM":
@@ -427,7 +463,7 @@ func mainErr() (int, error) {
 	if !trimpathFound {
 		setTrimpath, di, err := checkTrimpath(binVer, file, binary)
 		if err != nil {
-			return errCode, err
+			return err
 		}
 		if setTrimpath {
 			buildArgs = append(buildArgs, "-trimpath")
@@ -438,9 +474,9 @@ func mainErr() (int, error) {
 	// if the binary was built with VCS info embedded, check that our
 	// build env is compatible and if not make it so
 	if vcsUsed != "" {
-		tempFile, checkedOut, err := checkVCS(vcsUsed, vcsRev, vcsModified, binary)
+		tempFile, checkedOut, err := checkVCS(ctx, vcsUsed, vcsRev, vcsModified, binary)
 		if err != nil {
-			return errCode, err
+			return err
 		}
 		if tempFile != "" {
 			defer func() {
@@ -454,7 +490,7 @@ func mainErr() (int, error) {
 				defer fmt.Println("git checkout -q -")
 			} else {
 				defer func() {
-					_, _ = runCommand("git", "checkout", "-q", "-")
+					_, _ = runCommand(ctx, "git", "checkout", "-q", "-")
 				}()
 			}
 		}
@@ -474,51 +510,51 @@ func mainErr() (int, error) {
 		}
 	}
 	if dockerInfo != nil {
-		if err := fillDockerCodeDirs(dockerInfo); err != nil {
-			return errCode, err
+		if err := fillDockerCodeDirs(ctx, dockerInfo); err != nil {
+			return err
 		}
 	}
-	err = attemptRepro(binary, ourBinary, vcsUsed != "", binVer, env, buildArgs, mainSrcFiles, dockerInfo)
+	err = attemptRepro(ctx, binary, ourBinary, vcsUsed != "", binVer, env, buildArgs, mainSrcFiles, dockerInfo)
 	if err != nil {
-		return errCode, err
+		return err
 	}
 	if dryRun {
-		return successCode, nil
+		return nil
 	}
 
 	// check that file sizes match
 	binfi, err := os.Stat(binary)
 	if err != nil {
-		return errCode, fmt.Errorf("reading file: %w", err)
+		return fmt.Errorf("reading file: %w", err)
 	}
 	ourBinfi, err := os.Stat(ourBinary)
 	if err != nil {
-		return errCode, fmt.Errorf("reading file: %w", err)
+		return fmt.Errorf("reading file: %w", err)
 	}
 
 	if binfi.Size() != ourBinfi.Size() {
-		return sizeDifferent, fmt.Errorf("failed to reproduce: file sizes don't match")
+		return errWithCode(sizeDifferentCode, fmt.Errorf("failed to reproduce: file sizes don't match"))
 	}
 
 	// check that file hashes match
 	binf, err := os.Open(binary)
 	if err != nil {
-		return errCode, fmt.Errorf("opening file: %w", err)
+		return fmt.Errorf("opening file: %w", err)
 	}
 	defer binf.Close()
 	ourBinf, err := os.Open(ourBinary)
 	if err != nil {
-		return errCode, fmt.Errorf("opening file: %w", err)
+		return fmt.Errorf("opening file: %w", err)
 	}
 	defer ourBinf.Close()
 
 	binHash := sha256.New()
 	if _, err := io.Copy(binHash, binf); err != nil {
-		return errCode, fmt.Errorf("hashing %q: %w", binary, err)
+		return fmt.Errorf("hashing %q: %w", binary, err)
 	}
 	ourBinHash := sha256.New()
 	if _, err := io.Copy(ourBinHash, ourBinf); err != nil {
-		return errCode, fmt.Errorf("hashing %q: %w", ourBinary, err)
+		return fmt.Errorf("hashing %q: %w", ourBinary, err)
 	}
 	binSum, ourBinSum := binHash.Sum(nil), ourBinHash.Sum(nil)
 	infof("%x  %q", binSum, binary)
@@ -529,34 +565,34 @@ func mainErr() (int, error) {
 		// if the build ID was explicitly set via a linker flag, don't
 		// check the differences between build IDs, they will be the same
 		if buildIDExplicitlySet {
-			return hashesDifferent, nil
+			return errJustExit(hashesDifferentCode)
 		}
 
-		binBuildID, err := getBuildID(binary)
+		binBuildID, err := getBuildID(ctx, binary)
 		if err != nil {
-			return hashesDifferent, fmt.Errorf("getting build ID of %q: %w", binary, err)
+			return errWithCode(hashesDifferentCode, fmt.Errorf("getting build ID of %q: %w", binary, err))
 		}
 		if _, err := binf.Seek(0, io.SeekStart); err != nil {
-			return hashesDifferent, fmt.Errorf("seeking to beginning of %q: %w", binary, err)
+			return errWithCode(hashesDifferentCode, fmt.Errorf("seeking to beginning of %q: %w", binary, err))
 		}
-		ourBinBuildID, err := getBuildID(ourBinary)
+		ourBinBuildID, err := getBuildID(ctx, ourBinary)
 		if err != nil {
-			return hashesDifferent, fmt.Errorf("getting build ID of %q: %w", ourBinary, err)
+			return errWithCode(hashesDifferentCode, fmt.Errorf("getting build ID of %q: %w", ourBinary, err))
 		}
 		if _, err := ourBinf.Seek(0, io.SeekStart); err != nil {
-			return hashesDifferent, fmt.Errorf("seeking to beginning of %q: %w", ourBinary, err)
+			return errWithCode(hashesDifferentCode, fmt.Errorf("seeking to beginning of %q: %w", ourBinary, err))
 		}
 
 		// if the build IDs are different but the rest of the binaries'
 		// contents match tell the user
 		restSame, err := onlyBuildIDDifferent(binf, ourBinf, binBuildID, ourBinBuildID)
 		if err != nil {
-			return hashesDifferent, fmt.Errorf("comparing binaries: %w", err)
+			return errWithCode(hashesDifferentCode, fmt.Errorf("comparing binaries: %w", err))
 		}
 
 		if restSame {
 			almostf("however, only the build ID differs between binaries, binaries are almost the same")
-			return buildIDSame, nil
+			return errJustExit(buildIDSameCode)
 		} else {
 			binBuildIDParts := bytes.Split(binBuildID, []byte("/"))
 			ourBinBuildIDParts := bytes.Split(ourBinBuildID, []byte("/"))
@@ -566,12 +602,12 @@ func mainErr() (int, error) {
 			}
 		}
 
-		return hashesDifferent, nil
+		return errJustExit(hashesDifferentCode)
 	}
 
 	successf("reproduced successfully! new binary is at %q", ourBinary)
 
-	return successCode, nil
+	return nil
 }
 
 type dockerBuildInfo struct {
@@ -703,7 +739,7 @@ func min(i, j int) int {
 	return j
 }
 
-func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, bool, error) {
+func checkVCS(ctx context.Context, vcsUsed, vcsRev string, vcsModified bool, binary string) (string, bool, error) {
 	var ok bool
 	var tempFileName string
 	// if we didn't return successfully and a temp file was created, delete
@@ -726,7 +762,7 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 	if _, err := exec.LookPath("git"); err != nil {
 		return "", false, fmt.Errorf(`could not find "git": %w`, err)
 	}
-	gitStatus, err := runCommand("git", "status", "--porcelain=v1")
+	gitStatus, err := runCommand(ctx, "git", "status", "--porcelain=v1")
 	if err != nil {
 		if strings.HasPrefix(string(gitStatus), "fatal: not a git repository") {
 			return "", false, fmt.Errorf("%q was built in a Git repo, but gorepro wasn't run in one; reproducing will fail", binary)
@@ -782,7 +818,7 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 		return "", false, fmt.Errorf("%q was built in a clean Git repo, and the local Git repo isn't clean; reproducing will fail", binary)
 	}
 
-	gitShow, err := runCommand("git", "-c", "log.showsignature=false", "show", "-s", "--format=%H")
+	gitShow, err := runCommand(ctx, "git", "-c", "log.showsignature=false", "show", "-s", "--format=%H")
 	if err != nil {
 		return "", false, fmt.Errorf("getting latest git commit: %s %w", gitShow, err)
 	}
@@ -794,7 +830,7 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 			fmt.Printf("git checkout -q %s\n", vcsRev)
 		} else {
 			infof("%q was built on commit %s but we're on %s, checking out correct commit", binary, vcsRev, latestCommit)
-			out, err := runCommand("git", "checkout", "-q", vcsRev)
+			out, err := runCommand(ctx, "git", "checkout", "-q", vcsRev)
 			if err != nil {
 				return "", false, fmt.Errorf("checking out git commit: %s %w", out, err)
 			}
@@ -806,7 +842,7 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 	return tempFileName, checkedOut, nil
 }
 
-func fillDockerCodeDirs(dockerInfo *dockerBuildInfo) error {
+func fillDockerCodeDirs(ctx context.Context, dockerInfo *dockerBuildInfo) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -814,7 +850,7 @@ func fillDockerCodeDirs(dockerInfo *dockerBuildInfo) error {
 	dockerInfo.localCodeDir = cwd
 
 	// figure out where module starts (where go.mod is) and mount accordingly
-	goMod, err := runCommand("go", "env", "GOMOD")
+	goMod, err := runCommand(ctx, "go", "env", "GOMOD")
 	if err != nil {
 		return fmt.Errorf(`error running "go env": %s %w`, goMod, err)
 	}
@@ -843,7 +879,7 @@ func fillDockerCodeDirs(dockerInfo *dockerBuildInfo) error {
 	return nil
 }
 
-func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, buildArgs, buildFiles []string, dockerInfo *dockerBuildInfo) error {
+func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer semver.Version, env, buildArgs, buildFiles []string, dockerInfo *dockerBuildInfo) error {
 	sort.Strings(buildArgs)
 	buildArgs = append([]string{"build"}, buildArgs...)
 
@@ -895,7 +931,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 			image = fmt.Sprintf("gorepro-local:%s", binVer)
 			imageExists := true
 			var exitError *exec.ExitError
-			out, err := runCommand("docker", "image", "inspect", image)
+			out, err := runCommand(ctx, "docker", "image", "inspect", image)
 			if err != nil {
 				if errors.As(err, &exitError) && bytes.Contains(out, []byte("No such image:")) {
 					imageExists = false
@@ -938,7 +974,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		} else {
 			env = append(env, fmt.Sprintf("GOMODCACHE=%s", dockerInfo.goModCache))
 		}
-		goEnvModCache, err := runCommand("go", "env", "GOMODCACHE")
+		goEnvModCache, err := runCommand(ctx, "go", "env", "GOMODCACHE")
 		if err != nil {
 			return fmt.Errorf(`error running "go env": %s %w`, goEnvModCache, err)
 		}
@@ -957,7 +993,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		} else {
 			env = append(env, fmt.Sprintf("GOCACHE=%s", dockerGoBuildCache))
 		}
-		goEnvCache, err := runCommand("go", "env", "GOCACHE")
+		goEnvCache, err := runCommand(ctx, "go", "env", "GOCACHE")
 		if err != nil {
 			return fmt.Errorf(`error running "go env": %s %w`, goEnvCache, err)
 		}
