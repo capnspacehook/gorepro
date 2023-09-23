@@ -46,6 +46,10 @@ linters-settings:
     sections:
       - standard
       - default
+  gocritic:
+    settings:
+      ifElseChain:
+        minThreshold: 3
   misspell:
     locale: US
   paralleltest:
