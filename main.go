@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime/debug"
 	"sort"
 	"strings"
 
@@ -247,7 +246,7 @@ func mainErr() (int, error) {
 
 	// ensure the go command is present
 	if _, err := exec.LookPath("go"); err != nil {
-		return errCode, fmt.Errorf(`error finding "go": %v`, err)
+		return errCode, fmt.Errorf(`error finding "go": %w`, err)
 	}
 
 	if flag.NArg() == 0 {
@@ -263,7 +262,7 @@ func mainErr() (int, error) {
 	// read the binary's build info
 	info, err := buildinfo.ReadFile(binary)
 	if err != nil {
-		return errCode, fmt.Errorf("error parsing build metadata: %v", err)
+		return errCode, fmt.Errorf("parsing build metadata: %w", err)
 	}
 	binVersionStr := info.GoVersion
 	if len(binVersionStr) > 2 {
@@ -271,7 +270,7 @@ func mainErr() (int, error) {
 	}
 	binVer, err := parseVersion(binVersionStr)
 	if err != nil {
-		return errCode, fmt.Errorf("error parsing go version of %q: %v", binary, err)
+		return errCode, fmt.Errorf("parsing go version of %q: %w", binary, err)
 	}
 	// check if binary can be reproduced
 	if binVer.Minor < 18 {
@@ -331,7 +330,7 @@ func mainErr() (int, error) {
 						file,
 					)
 				}
-				return errCode, fmt.Errorf("error reading build file: %v", err)
+				return errCode, fmt.Errorf("reading build file: %w", err)
 			}
 		}
 	}
@@ -340,7 +339,7 @@ func mainErr() (int, error) {
 	// a different version if it's not available
 	out, err := runCommand("go", "version")
 	if err != nil {
-		return errCode, fmt.Errorf(`error running "go version": %v`, err)
+		return errCode, fmt.Errorf(`error running "go version": %w`, err)
 	}
 
 	if len(out) < len(goVersionPrefix) {
@@ -414,7 +413,7 @@ func mainErr() (int, error) {
 	// needed to reproduce if it wasn't
 	var dockerInfo *dockerBuildInfo
 	if !trimpathFound {
-		setTrimpath, di, err := checkTrimpath(binVer, file, binary, info)
+		setTrimpath, di, err := checkTrimpath(binVer, file, binary)
 		if err != nil {
 			return errCode, err
 		}
@@ -478,11 +477,11 @@ func mainErr() (int, error) {
 	// check that file sizes match
 	binfi, err := os.Stat(binary)
 	if err != nil {
-		return errCode, fmt.Errorf("error reading file: %v", err)
+		return errCode, fmt.Errorf("reading file: %w", err)
 	}
 	ourBinfi, err := os.Stat(ourBinary)
 	if err != nil {
-		return errCode, fmt.Errorf("error reading file: %v", err)
+		return errCode, fmt.Errorf("reading file: %w", err)
 	}
 
 	if binfi.Size() != ourBinfi.Size() {
@@ -492,22 +491,22 @@ func mainErr() (int, error) {
 	// check that file hashes match
 	binf, err := os.Open(binary)
 	if err != nil {
-		return errCode, fmt.Errorf("error opening file: %v", err)
+		return errCode, fmt.Errorf("opening file: %w", err)
 	}
 	defer binf.Close()
 	ourBinf, err := os.Open(ourBinary)
 	if err != nil {
-		return errCode, fmt.Errorf("error opening file: %v", err)
+		return errCode, fmt.Errorf("opening file: %w", err)
 	}
 	defer ourBinf.Close()
 
 	binHash := sha256.New()
 	if _, err := io.Copy(binHash, binf); err != nil {
-		return errCode, fmt.Errorf("error hashing %q: %v", binary, err)
+		return errCode, fmt.Errorf("hashing %q: %w", binary, err)
 	}
 	ourBinHash := sha256.New()
 	if _, err := io.Copy(ourBinHash, ourBinf); err != nil {
-		return errCode, fmt.Errorf("error hashing %q: %v", ourBinary, err)
+		return errCode, fmt.Errorf("hashing %q: %w", ourBinary, err)
 	}
 	binSum, ourBinSum := binHash.Sum(nil), ourBinHash.Sum(nil)
 	infof("%x  %q", binSum, binary)
@@ -523,24 +522,24 @@ func mainErr() (int, error) {
 
 		binBuildID, err := getBuildID(binary)
 		if err != nil {
-			return hashesDifferent, fmt.Errorf("error getting build ID of %q: %v", binary, err)
+			return hashesDifferent, fmt.Errorf("getting build ID of %q: %w", binary, err)
 		}
 		if _, err := binf.Seek(0, io.SeekStart); err != nil {
-			return hashesDifferent, fmt.Errorf("error seeking to beginning of %q: %v", binary, err)
+			return hashesDifferent, fmt.Errorf("seeking to beginning of %q: %w", binary, err)
 		}
 		ourBinBuildID, err := getBuildID(ourBinary)
 		if err != nil {
-			return hashesDifferent, fmt.Errorf("error getting build ID of %q: %v", ourBinary, err)
+			return hashesDifferent, fmt.Errorf("getting build ID of %q: %w", ourBinary, err)
 		}
 		if _, err := ourBinf.Seek(0, io.SeekStart); err != nil {
-			return hashesDifferent, fmt.Errorf("error seeking to beginning of %q: %v", ourBinary, err)
+			return hashesDifferent, fmt.Errorf("seeking to beginning of %q: %w", ourBinary, err)
 		}
 
 		// if the build IDs are different but the rest of the binaries'
 		// contents match tell the user
 		restSame, err := onlyBuildIDDifferent(binf, ourBinf, binBuildID, ourBinBuildID)
 		if err != nil {
-			return hashesDifferent, fmt.Errorf("error comparing binaries: %v", err)
+			return hashesDifferent, fmt.Errorf("comparing binaries: %w", err)
 		}
 
 		if restSame {
@@ -570,7 +569,7 @@ type dockerBuildInfo struct {
 	containerCodeDir string
 }
 
-func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string, info *debug.BuildInfo) (bool, *dockerBuildInfo, error) {
+func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string) (bool, *dockerBuildInfo, error) {
 	// Go 1.19+ adds -trimpath to the build metadata, on earlier Go
 	// versions we can't always know for sure if it was passed
 	trimpathUnknown := true
@@ -592,7 +591,7 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string, info
 				return true, nil, nil
 			}
 		} else {
-			return false, nil, fmt.Errorf("error finding GOROOT of %q: %v", binary, err)
+			return false, nil, fmt.Errorf("finding GOROOT of %q: %w", binary, err)
 		}
 	}
 	// GOROOT will be 'go' if -trimpath was set
@@ -634,13 +633,13 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string, info
 
 	thirdPartyPkgs, err := file.GetVendors()
 	if err != nil {
-		return false, nil, fmt.Errorf("error getting packages of %q: %v", binary, err)
+		return false, nil, fmt.Errorf("getting packages of %q: %w", binary, err)
 	}
 	goModCache := findGoModCache(thirdPartyPkgs)
 	if goModCache == "" {
 		unknownPkgs, err := file.GetUnknown()
 		if err != nil {
-			return false, nil, fmt.Errorf("error getting packages of %q: %v", binary, err)
+			return false, nil, fmt.Errorf("getting packages of %q: %w", binary, err)
 		}
 		goModCache = findGoModCache(unknownPkgs)
 	}
@@ -648,7 +647,7 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string, info
 	// get the build dir the binary was built in
 	mainPkgs, err := file.GetPackages()
 	if err != nil {
-		return false, nil, fmt.Errorf("error getting packages of %q: %v", binary, err)
+		return false, nil, fmt.Errorf("getting packages of %q: %w", binary, err)
 	}
 	var buildDir string
 	for _, pkg := range mainPkgs {
@@ -713,14 +712,14 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 	}
 
 	if _, err := exec.LookPath("git"); err != nil {
-		return "", false, fmt.Errorf(`could not find "git": %v`, err)
+		return "", false, fmt.Errorf(`could not find "git": %w`, err)
 	}
 	gitStatus, err := runCommand("git", "status", "--porcelain=v1")
 	if err != nil {
 		if strings.HasPrefix(string(gitStatus), "fatal: not a git repository") {
 			return "", false, fmt.Errorf("%q was built in a Git repo, but gorepro wasn't run in one; reproducing will fail", binary)
 		}
-		return "", false, fmt.Errorf("error getting Git status: %s %v", gitStatus, err)
+		return "", false, fmt.Errorf("getting Git status: %s %w", gitStatus, err)
 	}
 
 	// if there are new/modified Go source files present, chances are
@@ -753,7 +752,7 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			return "", false, fmt.Errorf(`error parsing "git status" output: %v`, err)
+			return "", false, fmt.Errorf(`error parsing "git status" output: %w`, err)
 		}
 	}
 
@@ -763,7 +762,7 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 		)
 		tempFile, err := os.CreateTemp(".", "*")
 		if err != nil {
-			return "", false, fmt.Errorf("error creating temporary file: %v", err)
+			return "", false, fmt.Errorf("creating temporary file: %w", err)
 		}
 		tempFileName = tempFile.Name()
 		tempFile.Close()
@@ -773,7 +772,7 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 
 	gitShow, err := runCommand("git", "-c", "log.showsignature=false", "show", "-s", "--format=%H")
 	if err != nil {
-		return "", false, fmt.Errorf("error getting latest git commit: %s %v", gitShow, err)
+		return "", false, fmt.Errorf("getting latest git commit: %s %w", gitShow, err)
 	}
 	latestCommit := string(trimNewline(gitShow))
 	var checkedOut bool
@@ -785,7 +784,7 @@ func checkVCS(vcsUsed, vcsRev string, vcsModified bool, binary string) (string, 
 			infof("%q was built on commit %s but we're on %s, checking out correct commit", binary, vcsRev, latestCommit)
 			out, err := runCommand("git", "checkout", "-q", vcsRev)
 			if err != nil {
-				return "", false, fmt.Errorf("error checking out git commit: %s %v", out, err)
+				return "", false, fmt.Errorf("checking out git commit: %s %w", out, err)
 			}
 		}
 	}
@@ -805,7 +804,7 @@ func fillDockerCodeDirs(dockerInfo *dockerBuildInfo) error {
 	// figure out where module starts (where go.mod is) and mount accordingly
 	goMod, err := runCommand("go", "env", "GOMOD")
 	if err != nil {
-		return fmt.Errorf(`error running "go env": %s %v`, goMod, err)
+		return fmt.Errorf(`error running "go env": %s %w`, goMod, err)
 	}
 	goMod = trimNewline(goMod)
 	const goModFilenameLen = len("/go.mod")
@@ -845,7 +844,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		out = "/gorepro-output/" + file
 		dir, err := filepath.Abs(dir)
 		if err != nil {
-			return fmt.Errorf("error getting absolute path of output directory: %v", err)
+			return fmt.Errorf("getting absolute path of output directory: %w", err)
 		}
 		outputDir = dir
 	}
@@ -876,7 +875,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 	// TODO: use docker also if local go version is different and -trimpath is set
 	if dockerInfo != nil {
 		if _, err := exec.LookPath("docker"); err != nil {
-			return fmt.Errorf(`error finding "docker": %v`, err)
+			return fmt.Errorf(`error finding "docker": %w`, err)
 		}
 
 		image := fmt.Sprintf("golang:%s-alpine", binVer)
@@ -890,7 +889,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 				if errors.As(err, &exitError) && bytes.Contains(out, []byte("No such image:")) {
 					imageExists = false
 				} else {
-					return fmt.Errorf(`error running "docker image inspect: %v`, err)
+					return fmt.Errorf(`error running "docker image inspect: %w`, err)
 				}
 			}
 
@@ -903,7 +902,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 				verbosef("running command: %s", cmd)
 				err := cmd.Run()
 				if err != nil {
-					return fmt.Errorf("error building docker container: %v", err)
+					return fmt.Errorf("building docker container: %w", err)
 				}
 			}
 		}
@@ -911,7 +910,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		// TODO: don't do when dryrunning
 		tempDir, err := os.MkdirTemp("", "*")
 		if err != nil {
-			return fmt.Errorf("error creating temporary directory: %v", err)
+			return fmt.Errorf("creating temporary directory: %w", err)
 		}
 		defer func() {
 			if err := os.RemoveAll(tempDir); err != nil {
@@ -930,13 +929,13 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		}
 		goEnvModCache, err := runCommand("go", "env", "GOMODCACHE")
 		if err != nil {
-			return fmt.Errorf(`error running "go env": %s %v`, goEnvModCache, err)
+			return fmt.Errorf(`error running "go env": %s %w`, goEnvModCache, err)
 		}
 		ourGoModCache := string(trimNewline(goEnvModCache))
 		if ourGoModCache != "" {
 			if _, err := os.Stat(ourGoModCache); err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
-					return fmt.Errorf("error reading directory: %v", err)
+					return fmt.Errorf("reading directory: %w", err)
 				}
 				ourGoModCache = ""
 			}
@@ -949,13 +948,13 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 		}
 		goEnvCache, err := runCommand("go", "env", "GOCACHE")
 		if err != nil {
-			return fmt.Errorf(`error running "go env": %s %v`, goEnvCache, err)
+			return fmt.Errorf(`error running "go env": %s %w`, goEnvCache, err)
 		}
 		ourGoCache := string(trimNewline(goEnvCache))
 		if ourGoCache != "" {
 			if _, err := os.Stat(ourGoCache); err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
-					return fmt.Errorf("error reading directory: %v", err)
+					return fmt.Errorf("reading directory: %w", err)
 				}
 				ourGoCache = ""
 			}
@@ -1048,7 +1047,7 @@ func attemptRepro(binary, out string, useVCS bool, binVer semver.Version, env, b
 	verbosef("running command: %s", cmd)
 	err := cmd.Run()
 	if err != nil {
-		return fmt.Errorf("error building: %v", err)
+		return fmt.Errorf("building: %w", err)
 	}
 
 	return nil
@@ -1087,11 +1086,11 @@ func removeCacheDirs(tempDir string) {
 func buildOverlayMount(tempDir, prefix, src, dst string) (string, error) {
 	upperDir := filepath.Join(tempDir, prefix+"-upper")
 	if err := os.Mkdir(upperDir, 0o755); err != nil {
-		return "", fmt.Errorf("error creating directory: %v", err)
+		return "", fmt.Errorf("creating directory: %w", err)
 	}
 	workDir := filepath.Join(tempDir, prefix+"-work")
 	if err := os.Mkdir(workDir, 0o755); err != nil {
-		return "", fmt.Errorf("error creating directory: %v", err)
+		return "", fmt.Errorf("creating directory: %w", err)
 	}
 
 	return fmt.Sprintf(
