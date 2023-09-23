@@ -944,7 +944,7 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 
 			if !imageExists {
 				infof("%q was built with embedded Git information, building Go docker image with Git installed", binary)
-				cmd := exec.Command("docker", "build", "-t", image, "-")
+				cmd := exec.CommandContext(ctx, "docker", "build", "-t", image, "-")
 				cmd.Stdin = strings.NewReader(fmt.Sprintf(dockerfileTmpl, binVer))
 				cmd.Stdout = os.Stderr
 				cmd.Stderr = os.Stderr
@@ -1089,11 +1089,11 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 
 	// compile a new binary
 	infof("building new binary...")
-	cmd := exec.Command(buildArgs[0], buildArgs[1:]...)
+	cmd := exec.CommandContext(ctx, buildArgs[0], buildArgs[1:]...)
 	cmd.Env = env
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
-	verbosef("running command: %s", cmd)
+	verbosef("running command: %s %s", strings.Join(env, " "), cmd)
 	err := cmd.Run()
 	if err != nil {
 		return fmt.Errorf("building: %w", err)
