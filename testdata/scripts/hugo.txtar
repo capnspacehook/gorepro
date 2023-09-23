@@ -7,7 +7,7 @@ cd hugo-src
 
 # can't figure out why some projects are able to be almost reproduced,
 # but nontheless it's good to test this behavior
-! exec gorepro -no-go-gc -v ../hugo
+! exec gorepro -v ../hugo
 stdout 'was built in a dirty Git repo but the local Git repo is clean; creating a temporary file to make local Git repo dirty'
 stdout 'checking out correct commit'
 stdout 'failed to reproduce: file hashes don''t match'
