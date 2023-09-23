@@ -13,6 +13,7 @@ mkdir caddy-build
 cp cmd/caddy/main.go caddy-build/
 cd caddy-build
 exec go mod init caddy
+exec go mod edit -go=1.18
 exec go mod edit -require=github.com/caddyserver/caddy/v2@v2.5.2
 exec go mod tidy
 
