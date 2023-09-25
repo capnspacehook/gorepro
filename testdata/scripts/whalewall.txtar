@@ -1,0 +1,11 @@
+wget https://github.com/capnspacehook/whalewall/releases/download/v0.2.3/whalewall_0.2.3_linux_amd64.tar.gz
+sha256check whalewall_0.2.3_linux_amd64.tar.gz 18fcb31b72f68482510a5a9274c3c0a00d04593faa0cb02a6c79a276e6841273
+gunzip whalewall_0.2.3_linux_amd64.tar.gz
+untar whalewall_0.2.3_linux_amd64.tar
+exec git clone https://github.com/capnspacehook/whalewall.git whalewall-src
+cd whalewall-src
+
+exec gorepro -b=-ldflags='-s -w -X main.version=v0.2.3' -v ../whalewall
+stdout 'creating a temporary file to make local Git repo dirty'
+stdout 'checking out correct commit'
+sha256cmp ../whalewall ../whalewall.repro
