@@ -230,7 +230,9 @@ type errWithRetCode struct {
 	code int
 }
 
-//nolint:unparam unparam complains that hashesDifferentCode is only ever passed to the code parameter
+// unparam complains that hashesDifferentCode is only ever passed to the code parameter
+//
+//nolint:unparam
 func errWithCode(code int, err error) error {
 	return errWithRetCode{
 		error: err,
