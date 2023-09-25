@@ -230,6 +230,7 @@ type errWithRetCode struct {
 	code int
 }
 
+//nolint:unparam unparam complains that hashesDifferentCode is only ever passed to the code parameter
 func errWithCode(code int, err error) error {
 	return errWithRetCode{
 		error: err,
@@ -564,7 +565,7 @@ func mainErr() error {
 	}
 
 	if dockerInfo != nil {
-		if err := fillDockerBuildInfo(ctx, dockerInfo); err != nil {
+		if err := fillDockerBuildInfo(dockerInfo); err != nil {
 			return err
 		}
 	}
@@ -939,7 +940,7 @@ func findGoRoot(ctx context.Context, binary string, file *gore.GoFile, dockerInf
 	return nil
 }
 
-func fillDockerBuildInfo(ctx context.Context, dockerInfo *dockerBuildInfo) error {
+func fillDockerBuildInfo(dockerInfo *dockerBuildInfo) error {
 	if dockerInfo.goRoot == "" {
 		dockerInfo.goRoot = dockerGoRoot
 	}
