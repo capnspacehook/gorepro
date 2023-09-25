@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
 	"debug/buildinfo"
 	"errors"
@@ -15,8 +16,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/blang/semver/v4"
 	"github.com/fatih/color"
@@ -27,16 +31,26 @@ const (
 	cmdLinePkg      = "command-line-arguments"
 	goVersionPrefix = "go version go"
 
+	dockerGoRoot       = "/usr/local/go"
 	dockerGoModCache   = "/go-mod-cache"
 	dockerBuildDir     = "/build-dir"
 	dockerGoBuildCache = "/go-build-cache"
 
-	dockerfileTmpl = `
-FROM golang:%s-alpine
-
+	dockerfileFrom    = "FROM golang:%s-alpine"
+	gitDockerfileTmpl = `
 RUN apk add --update-cache git \
 	&& rm -rf /var/cache/apk/* \
 	&& git config --global --add safe.directory '*'`
+
+	goRootDockerfileTmpl = `
+ARG GOROOT=%s/
+ENV PATH=${GOROOT}bin:${PATH}
+
+RUN mkdir -p "${GOROOT}" \
+	&& mv /usr/local/go/* "${GOROOT}" \
+	&& rmdir /usr/local/go
+
+ENV GOROOT=`
 
 	reproSuffix = ".repro"
 )
@@ -114,15 +128,15 @@ For more information, see https://github.com/capnspacehook/gorepro.
 }
 
 type failReason struct {
-	reason          string
-	ifSizeDifferent bool
+	reason   string
+	retCodes []int
 }
 
-func addFailReason(ifSizeDifferent bool, format string, a ...any) {
+func addFailReason(retCodes []int, format string, a ...any) {
 	failReasons = append(failReasons,
 		failReason{
-			reason:          fmt.Sprintf(format, a...),
-			ifSizeDifferent: ifSizeDifferent,
+			reason:   fmt.Sprintf(format, a...),
+			retCodes: retCodes,
 		},
 	)
 }
@@ -140,27 +154,27 @@ func infof(format string, a ...any) {
 		return
 	}
 	infoColor.Printf(format, a...)
-	infoColor.Printf("\n")
+	infoColor.Println()
 }
 
 func warnf(format string, a ...any) {
 	warnColor.Printf(format, a...)
-	warnColor.Printf("\n")
+	warnColor.Println()
 }
 
 func errf(format string, a ...any) {
 	errColor.Printf(format, a...)
-	errColor.Printf("\n")
+	errColor.Println()
 }
 
 func almostf(format string, a ...any) {
 	almostColor.Printf(format, a...)
-	almostColor.Printf("\n")
+	almostColor.Println()
 }
 
 func successf(format string, a ...any) {
 	successColor.Printf(format, a...)
-	successColor.Printf("\n")
+	successColor.Println()
 }
 
 func parseVersion(version string) (semver.Version, error) {
@@ -216,6 +230,9 @@ type errWithRetCode struct {
 	code int
 }
 
+// unparam complains that hashesDifferentCode is only ever passed to the code parameter
+//
+//nolint:unparam
 func errWithCode(code int, err error) error {
 	return errWithRetCode{
 		error: err,
@@ -229,28 +246,30 @@ func mainRetCode() int {
 		return successCode
 	}
 
-	var errRetCode *errJustExit
-	var errAndRetCode *errWithRetCode
+	var errRetCode errJustExit
+	var errAndRetCode errWithRetCode
 	var retCode int
 	if errors.As(err, &errRetCode) {
-		retCode = int(*errRetCode)
+		retCode = int(errRetCode)
 	} else if errors.As(err, &errAndRetCode) {
 		retCode = errAndRetCode.code
-		errf("error %v", errAndRetCode)
+		if retCode == errCode {
+			errf("error %v", errAndRetCode)
+		}
 	} else {
-		errf("error %v", err)
 		retCode = errCode
+		errf("error %v", err)
+		return retCode
 	}
 
-	if retCode > successCode && len(failReasons) != 0 {
+	if retCode > errCode && len(failReasons) != 0 {
 		var sb strings.Builder
 		var reasonsListed int
 		sb.WriteString(warnColor.Sprint("reasons reproducing may have failed:\n"))
 		for _, reason := range failReasons {
-			// skip warnings that only apply if the produced binary has
-			// a different size than the specified binary and it has
-			// the same size
-			if retCode != sizeDifferentCode && reason.ifSizeDifferent {
+			// Skip warnings that don't apply to the returned error code.
+			// Warnings that
+			if reason.retCodes != nil && !slices.Contains(reason.retCodes, retCode) {
 				continue
 			}
 			sb.WriteString(warnColor.Sprintf(" - %s\n", reason.reason))
@@ -315,7 +334,7 @@ func mainErr() error {
 	}
 	// check if binary can be reproduced
 	if binVer.Minor < 18 {
-		return fmt.Errorf("%q was built with go%s, only go1.18 or newer embeds build metadata that is required by gorepro",
+		return fmt.Errorf("%q was built with Go %s, only Go 1.18 or newer embeds build metadata that is required by gorepro",
 			binary,
 			binVersionStr,
 		)
@@ -326,8 +345,8 @@ func mainErr() error {
 
 	if binVer.Minor < 20 {
 		addFailReason(
-			true,
-			`%q was built with go%s which doesn't include what "-buildmode" was set to, a non default build mode may have been used`,
+			nil,
+			`%q was built with Go %s which doesn't include what "-buildmode" was set to, a non default build mode may have been used`,
 			binary,
 			binVersionStr,
 		)
@@ -392,11 +411,16 @@ func mainErr() error {
 		return fmt.Errorf(`malformed "go version" output`)
 	}
 	goVersionStr := string(out[:i])
+	goVer, err := parseVersion(goVersionStr)
+	if err != nil {
+		return fmt.Errorf("parsing version of local Go toolchain: %w", err)
+	}
 
 	// build command that will hopefully reproduce the binary from its
 	// embedded build information
 	var buildArgs []string
 	var env []string
+	var buildModeSet bool
 	var buildIDExplicitlySet bool
 	var trimpathFound bool
 	var vcsUsed string
@@ -405,16 +429,31 @@ func mainErr() error {
 	for _, setting := range info.Settings {
 		switch setting.Key {
 		case "-asmflags", "-buildmode", "-gcflags", "-ldflags", "-tags":
-			if setting.Key == "ldflags" {
+			if setting.Key == "-ldflags" {
 				if strings.Contains(setting.Value, "-buildid") {
 					buildIDExplicitlySet = true
 				}
 			}
+			value := setting.Value
+			if setting.Key == "-buildmode" {
+				buildModeSet = true
+				if setting.Value == "exe" {
+					infof(`passing "-buildmode=default" instead of "-buildmode=exe"`)
+
+					value = "default"
+					addFailReason(
+						nil,
+						`"-buildmode=exe" is in the embedded build metadata of %q but it's impossible to tell if "-buildmode=default" was passed at build time instead.
+   As explicitly passing "-buildmode=exe" is uncommon, "-buildmode=default" was used for this build instead. Trying again with "gorepro -b=-buildmode=exe ..." may reproduce the binary.`,
+						binary,
+					)
+				}
+			}
 
 			if dryRun {
-				buildArgs = append(buildArgs, fmt.Sprintf(`%s=%q`, setting.Key, setting.Value))
+				buildArgs = append(buildArgs, fmt.Sprintf(`%s=%q`, setting.Key, value))
 			} else {
-				buildArgs = append(buildArgs, fmt.Sprintf("%s=%s", setting.Key, setting.Value))
+				buildArgs = append(buildArgs, fmt.Sprintf("%s=%s", setting.Key, value))
 			}
 		case "-compiler":
 			if setting.Value != "gc" {
@@ -428,8 +467,8 @@ func mainErr() error {
 			trimpathFound = true
 			if binVer.Minor <= 21 {
 				addFailReason(
-					false,
-					`Go <= 1.21 was used to build %q and "-trimpath" was set, if "-ldflags" was set at build time it won't be in embedded build data`,
+					nil,
+					`Go <= 1.21 was used to build %q and "-trimpath" was set, if "-ldflags" was set at build time it won't be in the embedded build data`,
 					binary,
 				)
 			}
@@ -441,7 +480,7 @@ func mainErr() error {
 			if setting.Value == "true" {
 				vcsModified = true
 				addFailReason(
-					false,
+					nil,
 					"the Git repo %q was built in had uncommitted file(s) when it was built, you may be trying to build with different source code",
 					binary,
 				)
@@ -457,6 +496,15 @@ func mainErr() error {
 		case "GOAMD64", "GOARCH", "GOARM", "GOEXPERIMENT", "GOMIPS", "GOMIPS64", "GOOS", "GOPPC64", "GOWASM":
 			env = append(env, fmt.Sprintf("%s=%s", setting.Key, setting.Value))
 		}
+	}
+
+	if binVer.Minor < 20 && !buildModeSet {
+		addFailReason(
+			[]int{buildIDSameCode},
+			`"-buildmode" wasn't in the embedded build metadata of %q but it may have been set to "-buildmode=exe";
+   trying again with "gorepro -b=-buildmode=exe ..." may reproduce the binary`,
+			binary,
+		)
 	}
 
 	// try and determine if -trimpath was set and gather necessary information
@@ -500,23 +548,33 @@ func mainErr() error {
 		buildArgs = append(buildArgs, "-buildvcs=false")
 	}
 
-	// try to reproduce the binary
+	// if the same build flags are passed twice, the last flag will
+	// overwrite the flags before
 	if len(extraFlags) != 0 {
 		buildArgs = append(buildArgs, extraFlags...)
 	}
-	ourBinary := binary + reproSuffix
-	if binVersionStr != goVersionStr && dockerInfo == nil {
-		dockerInfo = &dockerBuildInfo{
-			goModCache: dockerGoModCache,
-			buildDir:   dockerBuildDir,
-		}
+
+	if err := findGoRoot(ctx, binary, file, dockerInfo); err != nil {
+		return err
 	}
+
+	// if the local version of Go isn't the same as the version that
+	// built the binary, building in Docker isn't needed and the local
+	// version of Go is >= 1.21.0, use GOTOOLCHAIN to ensure the correct
+	// Go version will be used instead.
+	if binVersionStr != goVersionStr && dockerInfo == nil && goVer.Minor >= 21 {
+		env = append(env, fmt.Sprintf("GOTOOLCHAIN=go%s", binVersionStr))
+	}
+
 	if dockerInfo != nil {
-		if err := fillDockerCodeDirs(ctx, dockerInfo); err != nil {
+		if err := fillDockerBuildInfo(dockerInfo); err != nil {
 			return err
 		}
 	}
-	err = attemptRepro(ctx, binary, ourBinary, vcsUsed != "", binVer, env, buildArgs, mainSrcFiles, dockerInfo)
+
+	// try to reproduce the binary
+	ourBinary := binary + reproSuffix
+	err = attemptRepro(ctx, binary, ourBinary, vcsUsed != "", binVer, env, buildArgs, mainSrcFiles, info, dockerInfo)
 	if err != nil {
 		return err
 	}
@@ -535,7 +593,8 @@ func mainErr() error {
 	}
 
 	if binfi.Size() != ourBinfi.Size() {
-		return errWithCode(sizeDifferentCode, fmt.Errorf("failed to reproduce: file sizes don't match"))
+		errf("failed to reproduce: file sizes don't match")
+		return errJustExit(sizeDifferentCode)
 	}
 
 	// check that file hashes match
@@ -613,6 +672,7 @@ func mainErr() error {
 }
 
 type dockerBuildInfo struct {
+	goRoot           string
 	goModCache       string
 	buildDir         string
 	localCodeDir     string
@@ -634,7 +694,7 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string) (boo
 			// if we don't know if -trimpath was set
 			if trimpathUnknown {
 				addFailReason(
-					false,
+					nil,
 					`"-trimpath" may not have been set when building %q, it could not be detected from embedded build metadata`,
 					binary,
 				)
@@ -713,7 +773,7 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string) (boo
 	}
 	if cwd != buildDir && trimpathUnknown {
 		addFailReason(
-			false,
+			nil,
 			`"-trimpath" may not have been set when building %q, and %q was used as the build directory while you are using %q`,
 			binary,
 			buildDir,
@@ -748,16 +808,14 @@ func checkVCS(ctx context.Context, vcsUsed, vcsRev string, vcsModified bool, bin
 	// it so the caller doesn't have to worry about it
 	defer func() {
 		if tempFileName != "" && !ok {
-			defer func() {
-				if err := os.Remove(tempFileName); err != nil {
-					warnf("error removing temporary file: %v", err)
-				}
-			}()
+			if err := os.Remove(tempFileName); err != nil {
+				warnf("error removing temporary file: %v", err)
+			}
 		}
 	}()
 
 	if vcsUsed != "git" {
-		addFailReason(false, "version control system %s isn't supported by gorepro", vcsUsed)
+		addFailReason(nil, "version control system %s isn't supported by gorepro", vcsUsed)
 		return "", false, nil
 	}
 
@@ -794,7 +852,7 @@ func checkVCS(ctx context.Context, vcsUsed, vcsRev string, vcsModified bool, bin
 			_, file = filepath.Split(file)
 			if strings.HasSuffix(file, ".go") || file == "go.mod" || file == "go.sum" {
 				addFailReason(
-					false,
+					nil,
 					"there is at least one new or modified Go file in the local Git repo, source code may differ from what %q was built with",
 					binary,
 				)
@@ -844,7 +902,57 @@ func checkVCS(ctx context.Context, vcsUsed, vcsRev string, vcsModified bool, bin
 	return tempFileName, checkedOut, nil
 }
 
-func fillDockerCodeDirs(ctx context.Context, dockerInfo *dockerBuildInfo) error {
+func findGoRoot(ctx context.Context, binary string, file *gore.GoFile, dockerInfo *dockerBuildInfo) error {
+	// if we already need to build in a Docker container ensure the
+	// GOROOT used will be the same was what was used to build the
+	// binary
+	binGoRoot, err := file.GetGoRoot()
+	if err != nil {
+		if errors.Is(err, gore.ErrNoGoRootFound) {
+			addFailReason(
+				[]int{sizeDifferentCode, hashesDifferentCode},
+				"the GOROOT of %q couldn't be found, a incorrect GOROOT may have been used",
+				binary,
+			)
+			return nil
+		}
+		return fmt.Errorf("finding GOROOT of %q: %w", binary, err)
+	}
+
+	if dockerInfo != nil && binGoRoot != dockerGoRoot {
+		dockerInfo.goRoot = binGoRoot
+		return nil
+	}
+
+	// if the binary's GOROOT doesn't match our local GOROOT we need
+	// to build in a Docker container to ensure the correct GOROOT
+	// is used
+	goRoot, err := runCommand(ctx, "go", "env", "GOROOT")
+	if err != nil {
+		return fmt.Errorf("getting GOROOT: %w", err)
+	}
+	goRoot = trimNewline(goRoot)
+
+	if string(goRoot) != binGoRoot {
+		dockerInfo = &dockerBuildInfo{
+			goRoot: binGoRoot,
+		}
+	}
+
+	return nil
+}
+
+func fillDockerBuildInfo(dockerInfo *dockerBuildInfo) error {
+	if dockerInfo.goRoot == "" {
+		dockerInfo.goRoot = dockerGoRoot
+	}
+	if dockerInfo.goModCache == "" {
+		dockerInfo.goModCache = dockerGoModCache
+	}
+	if dockerInfo.buildDir == "" {
+		dockerInfo.buildDir = dockerBuildDir
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -852,17 +960,19 @@ func fillDockerCodeDirs(ctx context.Context, dockerInfo *dockerBuildInfo) error 
 	dockerInfo.localCodeDir = cwd
 
 	// figure out where module starts (where go.mod is) and mount accordingly
-	goMod, err := runCommand(ctx, "go", "env", "GOMOD")
+	goModDir, err := getGoModDir()
 	if err != nil {
-		return fmt.Errorf(`error running "go env": %s %w`, goMod, err)
+		return err
 	}
-	goMod = trimNewline(goMod)
-	const goModFilenameLen = len("/go.mod")
-	if goModStr := string(goMod); len(goModStr) > goModFilenameLen && goModStr != os.DevNull {
-		dockerInfo.localCodeDir = goModStr[:len(goModStr)-goModFilenameLen]
+	if goModDir != "" {
+		dockerInfo.localCodeDir = goModDir
 	}
 
+	// ensure the container code dir is set correctly so the source code
+	// is mounted at the appropriate local dir
 	dockerInfo.containerCodeDir = dockerInfo.buildDir
+	// if we aren't in the root dir of the module, adjust the
+	// container code dir accordingly
 	if dockerInfo.localCodeDir != cwd {
 		sep := string(filepath.Separator)
 		buildDirParts := strings.Split(dockerInfo.buildDir, sep)
@@ -877,11 +987,34 @@ func fillDockerCodeDirs(ctx context.Context, dockerInfo *dockerBuildInfo) error 
 			}
 		}
 	}
+	// If the container code dir is a subdir of the local code dir, set
+	// the container code dir to the local code dir. This means the
+	// main package isn't in the module root dir and we don't want to
+	// mount the source code at the main package dir.
+	if strings.HasPrefix(dockerInfo.containerCodeDir, dockerInfo.localCodeDir) {
+		dockerInfo.containerCodeDir = dockerInfo.localCodeDir
+	}
 
 	return nil
 }
 
-func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer semver.Version, env, buildArgs, buildFiles []string, dockerInfo *dockerBuildInfo) error {
+var getGoModDir = sync.OnceValues(func() (string, error) {
+	goMod, err := runCommand(context.Background(), "go", "env", "GOMOD")
+	if err != nil {
+		return "", fmt.Errorf(`running "go env": %s %w`, goMod, err)
+	}
+
+	goMod = trimNewline(goMod)
+	const goModFilenameLen = len("/go.mod")
+	goModStr := string(goMod)
+	if len(goModStr) > goModFilenameLen && goModStr != os.DevNull {
+		return goModStr[:len(goModStr)-goModFilenameLen], nil
+	}
+
+	return "", nil
+})
+
+func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer semver.Version, env, buildArgs, buildFiles []string, info *debug.BuildInfo, dockerInfo *dockerBuildInfo) error {
 	sort.Strings(buildArgs)
 	buildArgs = append([]string{"build"}, buildArgs...)
 
@@ -929,8 +1062,11 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 
 		image := fmt.Sprintf("golang:%s-alpine", binVer)
 		// build a Go docker image with git if necessary
-		if useVCS {
-			image = fmt.Sprintf("gorepro-local:%s", binVer)
+		if useVCS || dockerInfo.goRoot != dockerGoRoot {
+			// hash the GOROOT with md5 so the path doesn't make
+			// the image reference invalid
+			goRootHash := md5.Sum([]byte(dockerInfo.goRoot))
+			image = fmt.Sprintf("gorepro-local:%s-%t-%x", binVer, useVCS, string(goRootHash[:]))
 			imageExists := true
 			var exitError *exec.ExitError
 			out, err := runCommand(ctx, "docker", "image", "inspect", image)
@@ -943,9 +1079,26 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 			}
 
 			if !imageExists {
-				infof("%q was built with embedded Git information, building Go docker image with Git installed", binary)
+				var dockerfile io.Reader
+				if useVCS && dockerInfo.goRoot == dockerGoRoot {
+					infof("%q was built with embedded Git information, building Go docker image with Git installed", binary)
+					dockerfile = strings.NewReader(fmt.Sprintf(
+						dockerfileFrom+gitDockerfileTmpl, binVer,
+					))
+				} else if !useVCS && dockerInfo.goRoot != dockerGoRoot {
+					infof("%q was built with a non-default GOROOT, building Go docker image with a matching GOROOT", binary)
+					dockerfile = strings.NewReader(fmt.Sprintf(
+						dockerfileFrom+goRootDockerfileTmpl, binVer, dockerInfo.goRoot,
+					))
+				} else {
+					infof("%q was built with embedded Git information and a non-default GOROOT, building Go docker image with Git installed and a matching GOROOT", binary)
+					dockerfile = strings.NewReader(fmt.Sprintf(
+						dockerfileFrom+gitDockerfileTmpl+goRootDockerfileTmpl, binVer, dockerInfo.goRoot,
+					))
+				}
+
 				cmd := exec.CommandContext(ctx, "docker", "build", "-t", image, "-")
-				cmd.Stdin = strings.NewReader(fmt.Sprintf(dockerfileTmpl, binVer))
+				cmd.Stdin = dockerfile
 				cmd.Stdout = os.Stderr
 				cmd.Stderr = os.Stderr
 				verbosef("running command: %s", cmd)
@@ -1087,6 +1240,43 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 		buildArgs = append([]string{"go"}, buildArgs...)
 	}
 
+	// If the module path is different from the main package's path,
+	// pass the main package path so it gets compiled. If we are
+	// building in a Docker container and the build dir is set to a
+	// specific dir, the main package path doesn't need to be passed as
+	// the build dir was set by checkTrimpath and will be in the main
+	// packages's dir already.
+	//
+	// If the main package is 'command-line-arguments' that means the
+	// files of the main package were explicitly passed to 'go build'.
+	// Doing so requires the passed files are in the current directory
+	// at build time so they must be in the main package dir. We
+	// checked earlier that any passed files are in our working dir so
+	// the main package dir does not need to be passed as a build arg.
+	if info.Path != cmdLinePkg && info.Main.Path != info.Path &&
+		(dockerInfo == nil || (dockerInfo != nil && dockerInfo.buildDir == dockerBuildDir)) {
+		goModDir, err := getGoModDir()
+		if err != nil {
+			return err
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+
+		mainPkgDir := strings.TrimPrefix(info.Path, info.Main.Path)
+		if filepath.Join(goModDir, mainPkgDir) != cwd {
+			if len(mainPkgDir) != 0 && mainPkgDir[0] != filepath.Separator {
+				return fmt.Errorf("unexpected module %q and main package %q", info.Main.Path, info.Path)
+			}
+			// ensure this is a relative path, the trimmed path will start
+			// with a slash
+			mainPkgDir = "." + mainPkgDir
+			buildArgs = append(buildArgs, mainPkgDir)
+
+		}
+	}
+
 	// compile a new binary
 	infof("building new binary...")
 	cmd := exec.CommandContext(ctx, buildArgs[0], buildArgs[1:]...)
@@ -1111,9 +1301,9 @@ func removeCacheDirs(tempDir string) {
 		}
 
 		if de.IsDir() {
-			return os.Chmod(path, 0o770)
+			return os.Chmod(path, 0o777)
 		}
-		if err := os.Chmod(path, 0o770); err != nil {
+		if err := os.Chmod(path, 0o777); err != nil {
 			return err
 		}
 

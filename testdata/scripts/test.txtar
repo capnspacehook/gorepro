@@ -1,19 +1,20 @@
-exec go install golang.org/dl/go1.17@latest
-exec go1.17 download
-exec go1.17 build -o out
-! exec gorepro out
-stdout 'was built with go1.17, only go1.18 or newer embeds build metadata that is required by gorepro'
+env GOTOOLCHAIN=go1.17.13
+cd first
+exec go build -o out
+! exec gorepro -v out
+stdout 'was built with Go 1.17.13, only Go 1.18 or newer embeds build metadata that is required by gorepro'
 
+env GOTOOLCHAIN=local
 env CGO_ENABLED=1
 exec go build -o out
-! exec gorepro out
+! exec gorepro -v out
 stdout '"out" was built with CGO enabled, reproducing is possible but not supported by gorepro'
 
 env CGO_ENABLED=0
 mv main.go mainfile.go
 exec go build -o out mainfile.go
 mv mainfile.go main.go
-! exec gorepro out
+! exec gorepro -v out
 stdout '"out" was built by passing "mainfile.go" to "go build", but that file couldn''t be found; rerun gorepro in the directory with "mainfile.go"'
 
 exec git init
@@ -24,31 +25,68 @@ exec git commit -m 'commit'
 exec go build -o out
 
 cp out outcpy
-! exec gorepro out
+! exec gorepro -v out
 stdout '"out" was built in a clean Git repo, and the local Git repo isn''t clean; reproducing will fail'
 
 exec go build -trimpath -o out
 cp other other.go
-! exec gorepro out
+! exec gorepro -v out
 stdout 'there is at least one new or modified Go file in the local Git repo, source code may differ from what "out" was built with'
-stdout 'Go <= 1.21 was used to build "out" and "-trimpath" was set, if "-ldflags" was set at build time it won''t be in embedded build data'
+stdout 'Go <= 1.21 was used to build "out" and "-trimpath" was set, if "-ldflags" was set at build time it won''t be in the embedded build data'
 
 rm .git
-! exec gorepro out
+! exec gorepro -v out
 stdout '"out" was built in a Git repo, but gorepro wasn''t run in one; reproducing will fail'
 
--- go.mod --
+cd ../second
+# test when main pkg dir is passed as a build arg without -trimpath
+exec go build -o out ./main
+exec gorepro -v out
+
+# test when main pkg dir is passed as a build arg with -trimpath
+exec go build -trimpath -o out ./main
+exec gorepro -v out
+
+cd main
+# test when main pkg dir is not mod root dir without -trimpath
+exec go build -o out
+exec gorepro -v out
+
+# test when main pkg dir is not mod root dir with -trimpath
+exec go build -trimpath -o out
+exec gorepro -v out
+
+# test when passing Go files as build args without -trimpath
+exec go build -o out main.go
+exec gorepro -v out
+
+# test when passing Go files as build args with -trimpath
+exec go build -trimpath -o out main.go
+exec gorepro -v out
+
+-- first/go.mod --
 module somemodule
 
 go 1.17
--- main.go --
+-- first/main.go --
 package main
 
 func main() {
     println("big chungus")
 }
 
--- other --
+-- first/other --
 package main
 
 var global = "global"
+
+-- second/go.mod --
+module othermodule
+
+go 1.21
+-- second/main/main.go --
+package main
+
+func main() {
+    println("big chungus")
+}
