@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"debug/buildinfo"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -18,13 +17,14 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"slices"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/blang/semver/v4"
 	"github.com/fatih/color"
 	"github.com/goretk/gore"
+	flag "github.com/spf13/pflag"
 )
 
 const (
@@ -70,11 +70,11 @@ var (
 	almostColor  = color.New(color.FgMagenta)
 	successColor = color.New(color.FgGreen)
 
-	additionalFlags string
-	dryRun          bool
-	goDebug         bool
-	noGoGC          bool
-	verbose         bool
+	extraFlags []string
+	dryRun     bool
+	goDebug    bool
+	noGoGC     bool
+	verbose    bool
 
 	goEnvVars = []string{
 		"HOME",
@@ -86,13 +86,13 @@ var (
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `
-Gorepro creates reproducible Go binaries.
+gorepro creates reproducible Go binaries.
 
 	gorepro [flags] binary
 
 It does this by creating a "go build" command from the embedded build
 metadata in the specified Go binary that should produce an identical
-binary. Gorepro will notify you if the specified binary was built in
+binary. gorepro will notify you if the specified binary was built in
 such a way that makes reproducing it unlikely, or your build environment
 is not suitable for reproducing.
 
@@ -100,12 +100,12 @@ If gorepro detects that a different version of Go was used to create
 the specified binary than what is currently installed, gorepro will
 build in a docker container with the correct Go version needed to
 reproduce the specified binary. Note that gorepro requires that
-binaries to reproduce be built
-with go1.18 or later as earlier versions do not embed build metadata.
+binaries to reproduce be built with Go 1.18 or later as earlier
+versions do not embed build metadata.
 
-Gorepro requires that it be run in the directory where the source code
+gorepro requires that it be run in the directory where the source code
 for the specified binary exists. Depending on how the specified binary
-was built, Gorepro may require that it be run inside a cloned Git
+was built, gorepro may require that it be run inside a cloned Git
 repository that the specified binary was built from. The binary to
 reproduce is not required to be in any specific directory however.
 
@@ -116,6 +116,11 @@ For example, to reproduce a Go binary:
 To specify required build arguments that are not detected:
 
 	gorepro -b=-buildmode=pie ./gobin
+
+To handle multiple undetected build arguments, -b can be passed multiple
+times, and can accept multiple comma-separated flags as well:
+
+    gorepro -b=-buildmode=exe,-cover -b="-ldflags=-s -w" ./gobin
 
 gorepro accepts the following flags:
 
@@ -243,6 +248,9 @@ func errWithCode(code int, err error) error {
 func mainRetCode() int {
 	err := mainErr()
 	if err == nil {
+		if dryRun {
+			fmt.Println()
+		}
 		return successCode
 	}
 
@@ -285,20 +293,15 @@ func mainRetCode() int {
 
 func mainErr() error {
 	flag.Usage = usage
-	flag.StringVar(&additionalFlags, "b", "", "extra build flags that are needed to reproduce but aren't detected, comma separated")
-	flag.BoolVar(&dryRun, "d", false, "print build commands instead of running them")
-	flag.BoolVar(&goDebug, "godebug", false, "print very verbose debug information from the Go compiler")
-	flag.BoolVar(&noGoGC, "no-go-gc", false, "trade memory usage for speed by disabling the garbage collector when compiling")
-	flag.BoolVar(&verbose, "v", false, "print commands being run and verbose information")
+	flag.StringSliceVarP(&extraFlags, "build-flags", "b", nil, "extra build flags that are needed to reproduce but aren't detected, comma separated")
+	flag.BoolVarP(&dryRun, "dry-run", "d", false, "print build commands instead of running them")
+	flag.BoolVarP(&goDebug, "godebug", "g", false, "print very verbose debug information from the Go compiler")
+	flag.BoolVarP(&noGoGC, "no-go-gc", "s", false, "trade memory usage for speed by disabling the garbage collector when compiling")
+	flag.BoolVarP(&verbose, "verbose", "v", false, "print commands being run and verbose information")
 	flag.Parse()
 
 	if dryRun && verbose {
 		return fmt.Errorf("-d and -v are mutually exclusive")
-	}
-
-	var extraFlags []string
-	if len(additionalFlags) != 0 {
-		extraFlags = strings.Split(additionalFlags, ",")
 	}
 
 	// ensure the go command is present
@@ -537,7 +540,7 @@ func mainErr() error {
 		}
 		if checkedOut {
 			if dryRun {
-				defer fmt.Println("git checkout -q -")
+				defer fmt.Print("; git checkout -q -")
 			} else {
 				defer func() {
 					_, _ = runCommand(ctx, "git", "checkout", "-q", "-")
@@ -546,12 +549,6 @@ func mainErr() error {
 		}
 	} else {
 		buildArgs = append(buildArgs, "-buildvcs=false")
-	}
-
-	// if the same build flags are passed twice, the last flag will
-	// overwrite the flags before
-	if len(extraFlags) != 0 {
-		buildArgs = append(buildArgs, extraFlags...)
 	}
 
 	if err := findGoRoot(ctx, binary, file, dockerInfo); err != nil {
@@ -570,6 +567,22 @@ func mainErr() error {
 		if err := fillDockerBuildInfo(dockerInfo); err != nil {
 			return err
 		}
+	}
+
+	// if the same build flags are passed twice, the last flag will
+	// overwrite the flags before
+	if len(extraFlags) != 0 {
+		// if we are printing this command quote all extra flags that
+		// contain spaces
+		if dryRun {
+			for i, extraFlag := range extraFlags {
+				if strings.ContainsRune(extraFlag, ' ') {
+					extraFlags[i] = strconv.Quote(extraFlags[i])
+				}
+			}
+		}
+
+		buildArgs = append(buildArgs, extraFlags...)
 	}
 
 	// try to reproduce the binary
@@ -887,7 +900,7 @@ func checkVCS(ctx context.Context, vcsUsed, vcsRev string, vcsModified bool, bin
 	if vcsRev != latestCommit {
 		checkedOut = true
 		if dryRun {
-			fmt.Printf("git checkout -q %s\n", vcsRev)
+			fmt.Printf("git checkout -q %s; ", vcsRev)
 		} else {
 			infof("%q was built on commit %s but we're on %s, checking out correct commit", binary, vcsRev, latestCommit)
 			out, err := runCommand(ctx, "git", "checkout", "-q", vcsRev)
@@ -1015,7 +1028,7 @@ var getGoModDir = sync.OnceValues(func() (string, error) {
 })
 
 func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer semver.Version, env, buildArgs, buildFiles []string, info *debug.BuildInfo, dockerInfo *dockerBuildInfo) error {
-	sort.Strings(buildArgs)
+	slices.Sort(buildArgs)
 	buildArgs = append([]string{"build"}, buildArgs...)
 
 	// if we're building inside a docker container we need to mount
@@ -1049,9 +1062,47 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 		env = append(env, "GOGC=off")
 	}
 
+	// If the module path is different from the main package's path,
+	// pass the main package path so it gets compiled. If we are
+	// building in a Docker container and the build dir is set to a
+	// specific dir, the main package path doesn't need to be passed as
+	// the build dir was set by checkTrimpath and will be in the main
+	// packages's dir already.
+	//
+	// If the main package is 'command-line-arguments' that means the
+	// files of the main package were explicitly passed to 'go build'.
+	// Doing so requires the passed files are in the current directory
+	// at build time so they must be in the main package dir. We
+	// checked earlier that any passed files are in our working dir so
+	// the main package dir does not need to be passed as a build arg.
+	var mainPkgArg string
+	if info.Path != cmdLinePkg && info.Main.Path != info.Path &&
+		(dockerInfo == nil || (dockerInfo != nil && dockerInfo.buildDir == dockerBuildDir)) {
+		goModDir, err := getGoModDir()
+		if err != nil {
+			return err
+		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+
+		mainPkgDir := strings.TrimPrefix(info.Path, info.Main.Path)
+		if filepath.Join(goModDir, mainPkgDir) != cwd {
+			if len(mainPkgDir) != 0 && mainPkgDir[0] != filepath.Separator {
+				return fmt.Errorf("unexpected module %q and main package %q", info.Main.Path, info.Path)
+			}
+			// ensure this is a relative path, the trimmed path will start
+			// with a slash
+			mainPkgDir = "." + mainPkgDir
+			mainPkgArg = mainPkgDir
+		}
+	}
+
 	if dockerInfo == nil && dryRun {
-		sort.Strings(env)
-		fmt.Printf("%s go %s\n", strings.Join(env, " "), strings.Join(buildArgs, " "))
+		slices.Sort(env)
+		buildArgs = append(buildArgs, strconv.Quote(mainPkgArg))
+		fmt.Printf("%s go %s", strings.Join(env, " "), strings.Join(buildArgs, " "))
 		return nil
 	}
 
@@ -1162,7 +1213,7 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 			}
 		}
 
-		sort.Strings(env)
+		slices.Sort(env)
 
 		if dryRun {
 			var cacheVolumes string
@@ -1173,7 +1224,7 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 				cacheVolumes += fmt.Sprintf(" -v %q:%q", ourGoCache, dockerGoBuildCache)
 			}
 
-			fmt.Printf("docker run -e %s -w %q%s -v %q:%q -v %q:/gorepro-output --rm %s go %s\n",
+			fmt.Printf("docker run -e %s -w %q%s -v %q:%q -v %q:/gorepro-output --rm %s go %s",
 				strings.Join(env, " -e "),
 				dockerInfo.buildDir,
 				cacheVolumes,
@@ -1240,41 +1291,8 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 		buildArgs = append([]string{"go"}, buildArgs...)
 	}
 
-	// If the module path is different from the main package's path,
-	// pass the main package path so it gets compiled. If we are
-	// building in a Docker container and the build dir is set to a
-	// specific dir, the main package path doesn't need to be passed as
-	// the build dir was set by checkTrimpath and will be in the main
-	// packages's dir already.
-	//
-	// If the main package is 'command-line-arguments' that means the
-	// files of the main package were explicitly passed to 'go build'.
-	// Doing so requires the passed files are in the current directory
-	// at build time so they must be in the main package dir. We
-	// checked earlier that any passed files are in our working dir so
-	// the main package dir does not need to be passed as a build arg.
-	if info.Path != cmdLinePkg && info.Main.Path != info.Path &&
-		(dockerInfo == nil || (dockerInfo != nil && dockerInfo.buildDir == dockerBuildDir)) {
-		goModDir, err := getGoModDir()
-		if err != nil {
-			return err
-		}
-		cwd, err := os.Getwd()
-		if err != nil {
-			return err
-		}
-
-		mainPkgDir := strings.TrimPrefix(info.Path, info.Main.Path)
-		if filepath.Join(goModDir, mainPkgDir) != cwd {
-			if len(mainPkgDir) != 0 && mainPkgDir[0] != filepath.Separator {
-				return fmt.Errorf("unexpected module %q and main package %q", info.Main.Path, info.Path)
-			}
-			// ensure this is a relative path, the trimmed path will start
-			// with a slash
-			mainPkgDir = "." + mainPkgDir
-			buildArgs = append(buildArgs, mainPkgDir)
-
-		}
+	if mainPkgArg != "" {
+		buildArgs = append(buildArgs, mainPkgArg)
 	}
 
 	// compile a new binary
