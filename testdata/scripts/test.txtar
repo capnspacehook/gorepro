@@ -38,6 +38,11 @@ rm .git
 ! exec gorepro -v out
 stdout '"out" was built in a Git repo, but gorepro wasn''t run in one; reproducing will fail'
 
+env GOBIN=$WORK
+exec go install golang.org/x/example/hello@latest
+! exec gorepro -v $GOBIN/hello
+stdout 'was built using "go install", reproducing is possible but not supported by gorepro'
+
 cd ../second
 # test when main pkg dir is passed as a build arg without -trimpath
 exec go build -o out ./main
