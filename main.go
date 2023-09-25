@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"debug/buildinfo"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -25,6 +24,7 @@ import (
 	"github.com/blang/semver/v4"
 	"github.com/fatih/color"
 	"github.com/goretk/gore"
+	flag "github.com/spf13/pflag"
 )
 
 const (
@@ -70,11 +70,11 @@ var (
 	almostColor  = color.New(color.FgMagenta)
 	successColor = color.New(color.FgGreen)
 
-	additionalFlags string
-	dryRun          bool
-	goDebug         bool
-	noGoGC          bool
-	verbose         bool
+	extraFlags []string
+	dryRun     bool
+	goDebug    bool
+	noGoGC     bool
+	verbose    bool
 
 	goEnvVars = []string{
 		"HOME",
@@ -86,13 +86,13 @@ var (
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `
-Gorepro creates reproducible Go binaries.
+gorepro creates reproducible Go binaries.
 
 	gorepro [flags] binary
 
 It does this by creating a "go build" command from the embedded build
 metadata in the specified Go binary that should produce an identical
-binary. Gorepro will notify you if the specified binary was built in
+binary. gorepro will notify you if the specified binary was built in
 such a way that makes reproducing it unlikely, or your build environment
 is not suitable for reproducing.
 
@@ -100,12 +100,12 @@ If gorepro detects that a different version of Go was used to create
 the specified binary than what is currently installed, gorepro will
 build in a docker container with the correct Go version needed to
 reproduce the specified binary. Note that gorepro requires that
-binaries to reproduce be built
-with go1.18 or later as earlier versions do not embed build metadata.
+binaries to reproduce be built with Go 1.18 or later as earlier
+versions do not embed build metadata.
 
-Gorepro requires that it be run in the directory where the source code
+gorepro requires that it be run in the directory where the source code
 for the specified binary exists. Depending on how the specified binary
-was built, Gorepro may require that it be run inside a cloned Git
+was built, gorepro may require that it be run inside a cloned Git
 repository that the specified binary was built from. The binary to
 reproduce is not required to be in any specific directory however.
 
@@ -116,6 +116,11 @@ For example, to reproduce a Go binary:
 To specify required build arguments that are not detected:
 
 	gorepro -b=-buildmode=pie ./gobin
+
+To handle multiple undetected build arguments, -b can be passed multiple
+times, and can accept multiple comma-separated flags as well:
+
+    gorepro -b=-buildmode=exe,-cover -b="-ldflags=-s -w" ./gobin
 
 gorepro accepts the following flags:
 
@@ -285,20 +290,15 @@ func mainRetCode() int {
 
 func mainErr() error {
 	flag.Usage = usage
-	flag.StringVar(&additionalFlags, "b", "", "extra build flags that are needed to reproduce but aren't detected, comma separated")
-	flag.BoolVar(&dryRun, "d", false, "print build commands instead of running them")
-	flag.BoolVar(&goDebug, "godebug", false, "print very verbose debug information from the Go compiler")
-	flag.BoolVar(&noGoGC, "no-go-gc", false, "trade memory usage for speed by disabling the garbage collector when compiling")
-	flag.BoolVar(&verbose, "v", false, "print commands being run and verbose information")
+	flag.StringSliceVarP(&extraFlags, "build-flags", "b", nil, "extra build flags that are needed to reproduce but aren't detected, comma separated")
+	flag.BoolVarP(&dryRun, "dry-run", "d", false, "print build commands instead of running them")
+	flag.BoolVarP(&goDebug, "godebug", "g", false, "print very verbose debug information from the Go compiler")
+	flag.BoolVarP(&noGoGC, "no-go-gc", "s", false, "trade memory usage for speed by disabling the garbage collector when compiling")
+	flag.BoolVarP(&verbose, "verbose", "v", false, "print commands being run and verbose information")
 	flag.Parse()
 
 	if dryRun && verbose {
 		return fmt.Errorf("-d and -v are mutually exclusive")
-	}
-
-	var extraFlags []string
-	if len(additionalFlags) != 0 {
-		extraFlags = strings.Split(additionalFlags, ",")
 	}
 
 	// ensure the go command is present

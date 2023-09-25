@@ -7,6 +7,7 @@ require (
 	github.com/fatih/color v1.15.0
 	github.com/goretk/gore v0.11.1
 	github.com/rogpeppe/go-internal v1.11.0
+	github.com/spf13/pflag v1.0.5
 )
 
 require (
