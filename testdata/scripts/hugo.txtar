@@ -5,10 +5,15 @@ untar hugo_0.104.0_linux-arm.tar
 exec git clone https://github.com/gohugoio/hugo.git hugo-src
 cd hugo-src
 
-# can't figure out why some projects are able to be almost reproduced,
-# but nontheless it's good to test this behavior
+# test that when -buildmode=exe isn't passed only the build ID is different
 ! exec gorepro -v ../hugo
 stdout 'was built in a dirty Git repo but the local Git repo is clean; creating a temporary file to make local Git repo dirty'
 stdout 'checking out correct commit'
 stdout 'failed to reproduce: file hashes don''t match'
 stdout 'however, only the build ID differs between binaries, binaries are almost the same'
+
+# test that explicitly passing -buildmode=exe reproduces the binary
+exec gorepro -b=-buildmode=exe -v ../hugo
+stdout 'was built in a dirty Git repo but the local Git repo is clean; creating a temporary file to make local Git repo dirty'
+stdout 'checking out correct commit'
+sha256cmp ../hugo ../hugo.repro

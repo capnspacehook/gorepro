@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -127,15 +128,15 @@ For more information, see https://github.com/capnspacehook/gorepro.
 }
 
 type failReason struct {
-	reason          string
-	ifSizeDifferent bool
+	reason   string
+	retCodes []int
 }
 
-func addFailReason(ifSizeDifferent bool, format string, a ...any) {
+func addFailReason(retCodes []int, format string, a ...any) {
 	failReasons = append(failReasons,
 		failReason{
-			reason:          fmt.Sprintf(format, a...),
-			ifSizeDifferent: ifSizeDifferent,
+			reason:   fmt.Sprintf(format, a...),
+			retCodes: retCodes,
 		},
 	)
 }
@@ -153,27 +154,27 @@ func infof(format string, a ...any) {
 		return
 	}
 	infoColor.Printf(format, a...)
-	infoColor.Printf("\n")
+	infoColor.Println()
 }
 
 func warnf(format string, a ...any) {
 	warnColor.Printf(format, a...)
-	warnColor.Printf("\n")
+	warnColor.Println()
 }
 
 func errf(format string, a ...any) {
 	errColor.Printf(format, a...)
-	errColor.Printf("\n")
+	errColor.Println()
 }
 
 func almostf(format string, a ...any) {
 	almostColor.Printf(format, a...)
-	almostColor.Printf("\n")
+	almostColor.Println()
 }
 
 func successf(format string, a ...any) {
 	successColor.Printf(format, a...)
-	successColor.Printf("\n")
+	successColor.Println()
 }
 
 func parseVersion(version string) (semver.Version, error) {
@@ -242,28 +243,30 @@ func mainRetCode() int {
 		return successCode
 	}
 
-	var errRetCode *errJustExit
-	var errAndRetCode *errWithRetCode
+	var errRetCode errJustExit
+	var errAndRetCode errWithRetCode
 	var retCode int
 	if errors.As(err, &errRetCode) {
-		retCode = int(*errRetCode)
+		retCode = int(errRetCode)
 	} else if errors.As(err, &errAndRetCode) {
 		retCode = errAndRetCode.code
-		errf("error %v", errAndRetCode)
+		if retCode == errCode {
+			errf("error %v", errAndRetCode)
+		}
 	} else {
-		errf("error %v", err)
 		retCode = errCode
+		errf("error %v", err)
+		return retCode
 	}
 
-	if retCode > successCode && len(failReasons) != 0 {
+	if retCode > errCode && len(failReasons) != 0 {
 		var sb strings.Builder
 		var reasonsListed int
 		sb.WriteString(warnColor.Sprint("reasons reproducing may have failed:\n"))
 		for _, reason := range failReasons {
-			// skip warnings that only apply if the produced binary has
-			// a different size than the specified binary and it has
-			// the same size
-			if retCode != sizeDifferentCode && reason.ifSizeDifferent {
+			// Skip warnings that don't apply to the returned error code.
+			// Warnings that
+			if reason.retCodes != nil && !slices.Contains(reason.retCodes, retCode) {
 				continue
 			}
 			sb.WriteString(warnColor.Sprintf(" - %s\n", reason.reason))
@@ -339,7 +342,7 @@ func mainErr() error {
 
 	if binVer.Minor < 20 {
 		addFailReason(
-			true,
+			nil,
 			`%q was built with Go %s which doesn't include what "-buildmode" was set to, a non default build mode may have been used`,
 			binary,
 			binVersionStr,
@@ -414,6 +417,7 @@ func mainErr() error {
 	// embedded build information
 	var buildArgs []string
 	var env []string
+	var buildModeSet bool
 	var buildIDExplicitlySet bool
 	var trimpathFound bool
 	var vcsUsed string
@@ -428,16 +432,19 @@ func mainErr() error {
 				}
 			}
 			value := setting.Value
-			if setting.Key == "-buildmode" && setting.Value == "exe" {
-				infof(`passing "-buildmode=default" instead of "-buildmode=exe"`)
+			if setting.Key == "-buildmode" {
+				buildModeSet = true
+				if setting.Value == "exe" {
+					infof(`passing "-buildmode=default" instead of "-buildmode=exe"`)
 
-				value = "default"
-				addFailReason(
-					false,
-					`"-buildmode=exe" is in the embedded build metadata of %q but it's impossible to tell if "-buildmode=default" was passed at build time instead.
-   As explicitly passing "-buildmode=exe" is uncommon, "-buildmode=default" was used for this build instead. Trying again with "gorepro -b=-buildmode=exe ..." may reproduce the binary`,
-					binary,
-				)
+					value = "default"
+					addFailReason(
+						nil,
+						`"-buildmode=exe" is in the embedded build metadata of %q but it's impossible to tell if "-buildmode=default" was passed at build time instead.
+   As explicitly passing "-buildmode=exe" is uncommon, "-buildmode=default" was used for this build instead. Trying again with "gorepro -b=-buildmode=exe ..." may reproduce the binary.`,
+						binary,
+					)
+				}
 			}
 
 			if dryRun {
@@ -457,7 +464,7 @@ func mainErr() error {
 			trimpathFound = true
 			if binVer.Minor <= 21 {
 				addFailReason(
-					false,
+					nil,
 					`Go <= 1.21 was used to build %q and "-trimpath" was set, if "-ldflags" was set at build time it won't be in the embedded build data`,
 					binary,
 				)
@@ -470,7 +477,7 @@ func mainErr() error {
 			if setting.Value == "true" {
 				vcsModified = true
 				addFailReason(
-					false,
+					nil,
 					"the Git repo %q was built in had uncommitted file(s) when it was built, you may be trying to build with different source code",
 					binary,
 				)
@@ -486,6 +493,15 @@ func mainErr() error {
 		case "GOAMD64", "GOARCH", "GOARM", "GOEXPERIMENT", "GOMIPS", "GOMIPS64", "GOOS", "GOPPC64", "GOWASM":
 			env = append(env, fmt.Sprintf("%s=%s", setting.Key, setting.Value))
 		}
+	}
+
+	if binVer.Minor < 20 && !buildModeSet {
+		addFailReason(
+			[]int{buildIDSameCode},
+			`"-buildmode" wasn't in the embedded build metadata of %q but it may have been set to "-buildmode=exe";
+   trying again with "gorepro -b=-buildmode=exe ..." may reproduce the binary`,
+			binary,
+		)
 	}
 
 	// try and determine if -trimpath was set and gather necessary information
@@ -574,7 +590,8 @@ func mainErr() error {
 	}
 
 	if binfi.Size() != ourBinfi.Size() {
-		return errWithCode(sizeDifferentCode, fmt.Errorf("failed to reproduce: file sizes don't match"))
+		errf("failed to reproduce: file sizes don't match")
+		return errJustExit(sizeDifferentCode)
 	}
 
 	// check that file hashes match
@@ -674,7 +691,7 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string) (boo
 			// if we don't know if -trimpath was set
 			if trimpathUnknown {
 				addFailReason(
-					false,
+					nil,
 					`"-trimpath" may not have been set when building %q, it could not be detected from embedded build metadata`,
 					binary,
 				)
@@ -753,7 +770,7 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string) (boo
 	}
 	if cwd != buildDir && trimpathUnknown {
 		addFailReason(
-			false,
+			nil,
 			`"-trimpath" may not have been set when building %q, and %q was used as the build directory while you are using %q`,
 			binary,
 			buildDir,
@@ -795,7 +812,7 @@ func checkVCS(ctx context.Context, vcsUsed, vcsRev string, vcsModified bool, bin
 	}()
 
 	if vcsUsed != "git" {
-		addFailReason(false, "version control system %s isn't supported by gorepro", vcsUsed)
+		addFailReason(nil, "version control system %s isn't supported by gorepro", vcsUsed)
 		return "", false, nil
 	}
 
@@ -832,7 +849,7 @@ func checkVCS(ctx context.Context, vcsUsed, vcsRev string, vcsModified bool, bin
 			_, file = filepath.Split(file)
 			if strings.HasSuffix(file, ".go") || file == "go.mod" || file == "go.sum" {
 				addFailReason(
-					false,
+					nil,
 					"there is at least one new or modified Go file in the local Git repo, source code may differ from what %q was built with",
 					binary,
 				)
@@ -889,7 +906,11 @@ func findGoRoot(ctx context.Context, binary string, file *gore.GoFile, dockerInf
 	binGoRoot, err := file.GetGoRoot()
 	if err != nil {
 		if errors.Is(err, gore.ErrNoGoRootFound) {
-			addFailReason(true, "the GOROOT of %q couldn't be found, a incorrect GOROOT may have been used", binary)
+			addFailReason(
+				[]int{sizeDifferentCode, hashesDifferentCode},
+				"the GOROOT of %q couldn't be found, a incorrect GOROOT may have been used",
+				binary,
+			)
 			return nil
 		}
 		return fmt.Errorf("finding GOROOT of %q: %w", binary, err)
