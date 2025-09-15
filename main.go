@@ -378,7 +378,7 @@ func mainErr() error {
 				break
 			}
 		}
-	} else if info.Main.Version != "" && info.Main.Version != "(devel)" {
+	} else if binVer.Minor <= 23 && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		return fmt.Errorf(`%q was built using "go install", reproducing is possible but not supported by gorepro`, binary)
 	}
 
