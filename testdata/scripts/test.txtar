@@ -32,42 +32,64 @@ exec go build -trimpath -o out
 cp other other.go
 ! exec gorepro -v out
 stdout 'there is at least one new or modified Go file in the local Git repo, source code may differ from what "out" was built with'
-stdout 'Go <= 1.21 was used to build "out" and "-trimpath" was set, if "-ldflags" was set at build time it won''t be in the embedded build data'
+stdout '"-trimpath" was set, if "-ldflags" was set at build time it won''t be in the embedded build data'
 
 rm .git
 ! exec gorepro -v out
 stdout '"out" was built in a Git repo, but gorepro wasn''t run in one; reproducing will fail'
 
+env GOTOOLCHAIN=go1.23.12
 env GOBIN=$WORK
 exec go install golang.org/x/example/hello@latest
 ! exec gorepro -v $GOBIN/hello
-stdout 'was built using "go install", reproducing is possible but not supported by gorepro'
+stdout 'was built using "go install <package>@<version>", reproducing is possible but not supported by gorepro'
 
+env GOTOOLCHAIN=local
 cd ../second
+
 # test when main pkg dir is passed as a build arg without -trimpath
 exec go build -o out ./main
 exec gorepro -v out
+
+exec go install ./main
+exec gorepro -v $GOBIN/main
 
 # test when main pkg dir is passed as a build arg with -trimpath
 exec go build -trimpath -o out ./main
 exec gorepro -v out
 
+exec go build -trimpath -o out ./main
+exec gorepro -v $GOBIN/main
+
 cd main
+
 # test when main pkg dir is not mod root dir without -trimpath
 exec go build -o out
 exec gorepro -v out
+
+exec go install
+exec gorepro -v $GOBIN/main
 
 # test when main pkg dir is not mod root dir with -trimpath
 exec go build -trimpath -o out
 exec gorepro -v out
 
+exec go install -trimpath
+exec gorepro -v $GOBIN/main
+
 # test when passing Go files as build args without -trimpath
 exec go build -o out main.go
 exec gorepro -v out
 
+exec go install main.go
+exec gorepro -v $GOBIN/main
+
 # test when passing Go files as build args with -trimpath
 exec go build -trimpath -o out main.go
 exec gorepro -v out
+
+exec go build -trimpath main.go
+exec gorepro -v $GOBIN/main
 
 -- first/go.mod --
 module somemodule

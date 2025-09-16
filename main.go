@@ -85,7 +85,7 @@ var (
 )
 
 func usage() {
-	fmt.Fprintf(os.Stderr, `
+	fmt.Fprint(os.Stderr, `
 gorepro creates reproducible Go binaries.
 
 	gorepro [flags] binary
@@ -126,7 +126,7 @@ gorepro accepts the following flags:
 
 `[1:])
 	flag.PrintDefaults()
-	fmt.Fprintf(os.Stderr, `
+	fmt.Fprint(os.Stderr, `
 
 For more information, see https://github.com/capnspacehook/gorepro.
 `[1:])
@@ -301,7 +301,7 @@ func mainErr() error {
 	flag.Parse()
 
 	if dryRun && verbose {
-		return fmt.Errorf("-d and -v are mutually exclusive")
+		return errors.New("-d and -v are mutually exclusive")
 	}
 
 	// ensure the go command is present
@@ -379,7 +379,7 @@ func mainErr() error {
 			}
 		}
 	} else if binVer.Minor <= 23 && info.Main.Version != "" && info.Main.Version != "(devel)" {
-		return fmt.Errorf(`%q was built using "go install", reproducing is possible but not supported by gorepro`, binary)
+		return fmt.Errorf(`%q was built using "go install <package>@<version>", reproducing is possible but not supported by gorepro`, binary)
 	}
 
 	// ensure main module source files exist
@@ -406,12 +406,12 @@ func mainErr() error {
 	}
 
 	if len(out) < len(goVersionPrefix) {
-		return fmt.Errorf(`malformed "go version" output`)
+		return errors.New(`malformed "go version" output`)
 	}
 	out = out[len(goVersionPrefix):]
 	i := bytes.IndexByte(out, ' ')
 	if i == -1 {
-		return fmt.Errorf(`malformed "go version" output`)
+		return errors.New(`malformed "go version" output`)
 	}
 	goVersionStr := string(out[:i])
 	goVer, err := parseVersion(goVersionStr)
@@ -468,13 +468,10 @@ func mainErr() error {
 			}
 		case "-trimpath":
 			trimpathFound = true
-			if binVer.Minor <= 21 {
-				addFailReason(
-					nil,
-					`Go <= 1.21 was used to build %q and "-trimpath" was set, if "-ldflags" was set at build time it won't be in the embedded build data`,
-					binary,
-				)
-			}
+			addFailReason(
+				nil,
+				`"-trimpath" was set, if "-ldflags" was set at build time it won't be in the embedded build data`,
+			)
 
 			buildArgs = append(buildArgs, setting.Key)
 		case "vcs":
@@ -560,7 +557,7 @@ func mainErr() error {
 	// version of Go is >= 1.21.0, use GOTOOLCHAIN to ensure the correct
 	// Go version will be used instead.
 	if binVersionStr != goVersionStr && dockerInfo == nil && goVer.Minor >= 21 {
-		env = append(env, fmt.Sprintf("GOTOOLCHAIN=go%s", binVersionStr))
+		env = append(env, "GOTOOLCHAIN=go"+binVersionStr)
 	}
 
 	if dockerInfo != nil {
@@ -779,6 +776,18 @@ func checkTrimpath(binVer semver.Version, file *gore.GoFile, binary string) (boo
 			break
 		}
 	}
+	if buildDir == "." {
+		if binVer.Minor < 22 {
+			addFailReason(
+				nil,
+				"the path of the main package is '.' and Go %s was used to build the binary, but only Go 1.22+ seems to set the path of the main package like this",
+				binVer,
+			)
+		}
+		// unset the build dir so the default build dir will be used, it
+		// doesn't matter
+		buildDir = ""
+	}
 
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -805,13 +814,6 @@ func trimNewline(b []byte) []byte {
 		return b[:len(b)-1]
 	}
 	return b
-}
-
-func min(i, j int) int {
-	if i < j {
-		return i
-	}
-	return j
 }
 
 func checkVCS(ctx context.Context, vcsUsed, vcsRev string, vcsModified bool, binary string) (string, bool, error) {
@@ -1047,7 +1049,7 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 	if dryRun {
 		buildArgs = append(buildArgs, fmt.Sprintf(`-o=%q`, out))
 	} else {
-		buildArgs = append(buildArgs, fmt.Sprintf("-o=%s", out))
+		buildArgs = append(buildArgs, "-o="+out)
 	}
 
 	if len(buildFiles) != 0 {
@@ -1178,7 +1180,7 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 		if dryRun {
 			env = append(env, fmt.Sprintf("GOMODCACHE=%q", dockerInfo.goModCache))
 		} else {
-			env = append(env, fmt.Sprintf("GOMODCACHE=%s", dockerInfo.goModCache))
+			env = append(env, "GOMODCACHE="+dockerInfo.goModCache)
 		}
 		goEnvModCache, err := runCommand(ctx, "go", "env", "GOMODCACHE")
 		if err != nil {
@@ -1197,7 +1199,7 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 		if dryRun {
 			env = append(env, fmt.Sprintf("GOCACHE=%q", dockerGoBuildCache))
 		} else {
-			env = append(env, fmt.Sprintf("GOCACHE=%s", dockerGoBuildCache))
+			env = append(env, "GOCACHE="+dockerGoBuildCache)
 		}
 		goEnvCache, err := runCommand(ctx, "go", "env", "GOCACHE")
 		if err != nil {
@@ -1274,7 +1276,7 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 			"-v",
 			fmt.Sprintf("%s:%s", dockerInfo.localCodeDir, dockerInfo.containerCodeDir),
 			"-v",
-			fmt.Sprintf("%s:/gorepro-output", outputDir),
+			outputDir+":/gorepro-output",
 		)
 		dockerArgs = append(
 			dockerArgs,
