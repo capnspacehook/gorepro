@@ -24,7 +24,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Cache Go files
-        uses: capnspacehook/cache-go@v1
+        uses: capnspacehook/cache-go@v2
 
       - name: Ensure main package builds
         run: |
