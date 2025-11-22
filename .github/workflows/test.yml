@@ -4,32 +4,26 @@ on:
   push:
     branches:
       - master
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/test.yml"
   pull_request:
     branches:
       - "*"
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/test.yml"
 
   workflow_dispatch: {}
 
 jobs:
-  race-test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-
-      - name: Install Go
-        uses: WillAbides/setup-go-faster@v1.14.0
-        with:
-          go-version-file: go.mod
-
-      - name: Cache Go files
-        uses: capnspacehook/cache-go@v1
-
-      - name: Ensure main package builds
-        run: |
-          go build
-
-      - name: Run tests
-        run: |
-          go test -race -timeout 20m ./...
+  test:
+    permissions:
+      contents: read
+    uses: capnspacehook/go-workflows/.github/workflows/test.yml@master
+    with:
+      run-fuzz-tests: false

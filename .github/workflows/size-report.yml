@@ -1,0 +1,28 @@
+name: Size report
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/size-report.yml"
+  pull_request:
+    branches:
+      - "*"
+    paths:
+      - "**.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/size-report.yml"
+
+  workflow_dispatch: {}
+
+jobs:
+  size-report:
+    permissions:
+      contents: write # so go-size-tracker can use git notes to cache size records
+      pull-requests: write # so go-size-tracker can comment on PRs
+    uses: capnspacehook/go-workflows/.github/workflows/size-report.yml@master
