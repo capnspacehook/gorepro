@@ -5,7 +5,7 @@ go 1.25.1
 require (
 	github.com/blang/semver/v4 v4.0.0
 	github.com/fatih/color v1.18.0
-	github.com/goretk/gore v0.13.18
+	github.com/goretk/gore v0.13.19
 	github.com/rogpeppe/go-internal v1.14.1
 	github.com/spf13/pflag v1.0.10
 )
