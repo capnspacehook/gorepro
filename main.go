@@ -184,9 +184,9 @@ func successf(format string, a ...any) {
 
 func parseVersion(version string) (semver.Version, error) {
 	if i := strings.Index(version, "beta"); i != -1 {
-		version = version[i-1:] + "-" + version[:i]
+		version = fmt.Sprintf("%s.0-%s", version[:i], version[i:])
 	} else if i := strings.Index(version, "rc"); i != -1 {
-		version = version[i-1:] + "-" + version[:i]
+		version = fmt.Sprintf("%s.0-%s", version[:i], version[i:])
 	} else if strings.Count(version, ".") == 1 {
 		version += ".0"
 	}
@@ -199,7 +199,11 @@ func parseVersion(version string) (semver.Version, error) {
 }
 
 func getBuildID(ctx context.Context, file string) ([]byte, error) {
-	return runCommand(ctx, "go", "tool", "buildid", file)
+	output, err := runCommand(ctx, "go", "tool", "buildid", file)
+	if err != nil {
+		return nil, err
+	}
+	return trimGoLogs(output), nil
 }
 
 func runCommand(ctx context.Context, name string, arg ...string) ([]byte, error) {
@@ -276,7 +280,6 @@ func mainRetCode() int {
 		sb.WriteString(warnColor.Sprint("reasons reproducing may have failed:\n"))
 		for _, reason := range failReasons {
 			// Skip warnings that don't apply to the returned error code.
-			// Warnings that
 			if reason.retCodes != nil && !slices.Contains(reason.retCodes, retCode) {
 				continue
 			}
@@ -404,11 +407,13 @@ func mainErr() error {
 	if err != nil {
 		return fmt.Errorf(`running "go version": %w`, err)
 	}
+	out = trimGoLogs(out)
 
-	if len(out) < len(goVersionPrefix) {
+	prefixIdx := bytes.Index(out, []byte(goVersionPrefix))
+	if prefixIdx == -1 {
 		return errors.New(`malformed "go version" output`)
 	}
-	out = out[len(goVersionPrefix):]
+	out = out[prefixIdx+len(goVersionPrefix):]
 	i := bytes.IndexByte(out, ' ')
 	if i == -1 {
 		return errors.New(`malformed "go version" output`)
@@ -816,6 +821,30 @@ func trimNewline(b []byte) []byte {
 	return b
 }
 
+// trimGoLogs trims lines with the "go: " prefix from the given bytes
+// and trims the trailing newline.
+func trimGoLogs(b []byte) []byte {
+	newlines := bytes.Split(b, []byte("\n"))
+	if len(newlines) == 1 {
+		return b
+	}
+
+	var buf bytes.Buffer
+
+	for i, line := range newlines {
+		if bytes.HasPrefix(line, []byte("go: ")) {
+			continue
+		}
+		buf.Write(line)
+		if i == len(newlines)-2 {
+			break
+		}
+		buf.WriteByte('\n')
+	}
+
+	return buf.Bytes()
+}
+
 func checkVCS(ctx context.Context, vcsUsed, vcsRev string, vcsModified bool, binary string) (string, bool, error) {
 	var ok bool
 	var tempFileName string
@@ -946,12 +975,10 @@ func findGoRoot(ctx context.Context, binary string, file *gore.GoFile, dockerInf
 	if err != nil {
 		return fmt.Errorf("getting GOROOT: %w", err)
 	}
-	goRoot = trimNewline(goRoot)
+	goRoot = trimGoLogs(goRoot)
 
-	if string(goRoot) != binGoRoot {
-		dockerInfo = &dockerBuildInfo{
-			goRoot: binGoRoot,
-		}
+	if dockerInfo != nil && string(goRoot) != binGoRoot {
+		dockerInfo.goRoot = binGoRoot
 	}
 
 	return nil
@@ -1019,11 +1046,11 @@ var getGoModDir = sync.OnceValues(func() (string, error) {
 		return "", fmt.Errorf(`running "go env": %s %w`, goMod, err)
 	}
 
-	goMod = trimNewline(goMod)
+	goMod = trimGoLogs(goMod)
 	const goModFilenameLen = len("/go.mod")
 	goModStr := string(goMod)
 	if len(goModStr) > goModFilenameLen && goModStr != os.DevNull {
-		return goModStr[:len(goModStr)-goModFilenameLen], nil
+		return filepath.Dir(goModStr), nil
 	}
 
 	return "", nil
@@ -1079,7 +1106,7 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 	// the main package dir does not need to be passed as a build arg.
 	var mainPkgArg string
 	if info.Path != cmdLinePkg && info.Main.Path != info.Path &&
-		(dockerInfo == nil || (dockerInfo != nil && dockerInfo.buildDir == dockerBuildDir)) {
+		(dockerInfo == nil || (dockerInfo.buildDir == dockerBuildDir)) {
 		goModDir, err := getGoModDir()
 		if err != nil {
 			return err
@@ -1103,7 +1130,9 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 
 	if dockerInfo == nil && dryRun {
 		slices.Sort(env)
-		buildArgs = append(buildArgs, strconv.Quote(mainPkgArg))
+		if mainPkgArg != "" {
+			buildArgs = append(buildArgs, strconv.Quote(mainPkgArg))
+		}
 		fmt.Printf("%s go %s", strings.Join(env, " "), strings.Join(buildArgs, " "))
 		return nil
 	}
@@ -1186,7 +1215,7 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 		if err != nil {
 			return fmt.Errorf(`error running "go env": %s %w`, goEnvModCache, err)
 		}
-		ourGoModCache := string(trimNewline(goEnvModCache))
+		ourGoModCache := string(trimGoLogs(goEnvModCache))
 		if ourGoModCache != "" {
 			if _, err := os.Stat(ourGoModCache); err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
@@ -1205,7 +1234,7 @@ func attemptRepro(ctx context.Context, binary, out string, useVCS bool, binVer s
 		if err != nil {
 			return fmt.Errorf(`error running "go env": %s %w`, goEnvCache, err)
 		}
-		ourGoCache := string(trimNewline(goEnvCache))
+		ourGoCache := string(trimGoLogs(goEnvCache))
 		if ourGoCache != "" {
 			if _, err := os.Stat(ourGoCache); err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
@@ -1435,10 +1464,11 @@ func findBuildID(r *bufio.Reader, buildID []byte) (int, error) {
 			return -1, err
 		}
 		if b == buildID[i] {
-			i++
 			if i == len(buildID)-1 {
-				return cur - len(buildID), nil
+				return cur - (len(buildID) - 1), nil
 			}
+
+			i++
 		} else {
 			i = 0
 		}
