@@ -39,15 +39,16 @@ jobs:
           cache: false
 
       - name: Restore Go cache
-        uses: capnspacehook/cache-go/restore@v2.0.1
+        uses: capnspacehook/cache-go/restore@v2.0.2
 
       - run: |
           echo "Testing with latest Go"
           go test
 
-          # test repro combinations with 2 previous minor Go versions
+          # test repro combinations with previous minor Go version
+          # TODO update this to test previous 2 versions once Go 1.27 is released
           CUR_MINOR_VER="$(go version | grep -oE 'go1\.([0-9]+)' | tr -d '\n' | tail -c 2)"
-          for i in 1 2; do
+          for i in 1; do
             GO_VER="go1.$((CUR_MINOR_VER - i)).0"
             echo "Testing with $GO_VER"
             GOTOOLCHAIN="$GO_VER" go test -run TestReproMatrix
@@ -55,4 +56,4 @@ jobs:
 
       - name: Save Go cache
         if: always()
-        uses: capnspacehook/cache-go/save@v2.0.1
+        uses: capnspacehook/cache-go/save@v2.0.2

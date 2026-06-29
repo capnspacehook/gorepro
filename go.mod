@@ -1,6 +1,8 @@
 module github.com/capnspacehook/gorepro
 
-go 1.25.1
+go 1.25
+
+toolchain go1.26.4
 
 require (
 	github.com/blang/semver/v4 v4.0.0
