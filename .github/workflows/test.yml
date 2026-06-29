@@ -22,8 +22,33 @@ on:
 
 jobs:
   test:
-    permissions:
-      contents: read
-    uses: capnspacehook/go-workflows/.github/workflows/test.yml@master
-    with:
-      run-fuzz-tests: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Install Go
+        uses: actions/setup-go@v6.5.0
+        with:
+          check-latest: true
+          cache: false
+
+      - name: Restore Go cache
+        uses: capnspacehook/cache-go/restore@v2.0.1
+
+      - run: |
+          echo "Testing with latest Go"
+          go test
+
+          # test repro combinations with 2 previous minor Go versions
+          CUR_MINOR_VER="$(go version | grep -oE 'go1\.([0-9]+)' | tr -d '\n' | tail -c 2)"
+          for i in 1 2; do
+            GO_VER="go1.$((MINOR - i)).0"
+            echo "Testing with $GO_VER"
+            GOTOOLCHAIN="$GO_VER" go test -run TestReproMatrix
+          done
+
+      - name: Save Go cache
+        if: always()
+        uses: capnspacehook/cache-go/save@v2.0.1
