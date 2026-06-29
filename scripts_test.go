@@ -20,8 +20,19 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	testscript.RunMain(m, map[string]func() int{
-		"gorepro": mainRetCode,
+	testscript.Main(m, map[string]func(){
+		"gorepro": func() {
+			os.Exit(mainRetCode())
+		},
+		"repro-maybe-b_id-mismatch": func() {
+			ret := mainRetCode()
+			switch ret {
+			case successCode, buildIDSameCode:
+				os.Exit(0)
+			default:
+				os.Exit(ret)
+			}
+		},
 	})
 }
 

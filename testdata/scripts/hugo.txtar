@@ -5,15 +5,8 @@ untar hugo_0.104.0_linux-arm.tar
 exec git clone https://github.com/gohugoio/hugo.git hugo-src
 cd hugo-src
 
-# test that when -buildmode=exe isn't passed only the build ID is different
-! exec gorepro -v ../hugo
+# Go 1.19 has a bug where the action ID is not computed deterministically, so assert 
+# the contents are identical or only the build ID (which contains the action ID) differs
+exec repro-maybe-b_id-mismatch -v ../hugo
 stdout 'was built in a dirty Git repo but the local Git repo is clean; creating a temporary file to make local Git repo dirty'
 stdout 'checking out correct commit'
-stdout 'failed to reproduce: file hashes don''t match'
-stdout 'however, only the build ID differs between binaries, binaries are almost the same'
-
-# test that explicitly passing -buildmode=exe reproduces the binary
-exec gorepro -b=-buildmode=exe -v ../hugo
-stdout 'was built in a dirty Git repo but the local Git repo is clean; creating a temporary file to make local Git repo dirty'
-stdout 'checking out correct commit'
-sha256cmp ../hugo ../hugo.repro
