@@ -6,7 +6,7 @@ toolchain go1.26.4
 
 require (
 	github.com/blang/semver/v4 v4.0.0
-	github.com/fatih/color v1.18.0
+	github.com/fatih/color v1.19.0
 	github.com/goretk/gore v0.14.1
 	github.com/rogpeppe/go-internal v1.15.0
 	github.com/spf13/pflag v1.0.10
