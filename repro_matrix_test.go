@@ -42,6 +42,8 @@ var (
 )
 
 func TestReproMatrix(t *testing.T) {
+	t.Parallel()
+
 	for _, c := range combinations(testing.Short()) {
 		t.Run(c.name(), func(t *testing.T) {
 			t.Parallel()
@@ -65,6 +67,8 @@ func TestReproMatrix(t *testing.T) {
 // auto-detect, asserting the documented exit code and guidance instead of
 // success. These are deliberately not part of the generated matrix.
 func TestReproKnownCases(t *testing.T) {
+	t.Parallel()
+
 	t.Run("CGO", func(t *testing.T) {
 		t.Parallel()
 
@@ -140,7 +144,7 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
-func runCmd(t *testing.T, dir string, env []string, name string, args ...string) string {
+func runCmd(t *testing.T, dir string, env []string, name string, args ...string) {
 	t.Helper()
 
 	cmd := exec.Command(name, args...)
@@ -150,7 +154,6 @@ func runCmd(t *testing.T, dir string, env []string, name string, args ...string)
 	if err != nil {
 		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
-	return string(out)
 }
 
 // newModuleBare creates a fresh module with only a go.mod and returns the source
@@ -534,10 +537,10 @@ func mkPair(a, av, b, bv int) pair {
 func pairwise(sizes []int) [][]int {
 	n := len(sizes)
 	uncovered := map[pair]bool{}
-	for a := 0; a < n; a++ {
+	for a := range n {
 		for b := a + 1; b < n; b++ {
-			for av := 0; av < sizes[a]; av++ {
-				for bv := 0; bv < sizes[b]; bv++ {
+			for av := range sizes[a] {
+				for bv := range sizes[b] {
 					uncovered[pair{a, av, b, bv}] = true
 				}
 			}
@@ -546,7 +549,7 @@ func pairwise(sizes []int) [][]int {
 
 	gain := func(tc []int, a, av int) int {
 		g := 0
-		for b := 0; b < n; b++ {
+		for b := range n {
 			if b == a || tc[b] == -1 {
 				continue
 			}
@@ -579,11 +582,11 @@ func pairwise(sizes []int) [][]int {
 		// (axis, value) that covers the most still-uncovered pairs.
 		for {
 			bestAxis, bestVal, bestGain := -1, -1, -1
-			for a := 0; a < n; a++ {
+			for a := range n {
 				if tc[a] != -1 {
 					continue
 				}
-				for av := 0; av < sizes[a]; av++ {
+				for av := range sizes[a] {
 					if g := gain(tc, a, av); g > bestGain {
 						bestAxis, bestVal, bestGain = a, av, g
 					}
@@ -595,7 +598,7 @@ func pairwise(sizes []int) [][]int {
 			tc[bestAxis] = bestVal
 		}
 
-		for a := 0; a < n; a++ {
+		for a := range n {
 			for b := a + 1; b < n; b++ {
 				delete(uncovered, pair{a, tc[a], b, tc[b]})
 			}
