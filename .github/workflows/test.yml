@@ -39,7 +39,7 @@ jobs:
           cache: false
 
       - name: Restore Go cache
-        uses: capnspacehook/cache-go/restore@v2.0.2
+        uses: capnspacehook/cache-go/restore@v2.1.1
 
       - run: |
           echo "Testing with latest Go"
@@ -56,4 +56,4 @@ jobs:
 
       - name: Save Go cache
         if: always()
-        uses: capnspacehook/cache-go/save@v2.0.2
+        uses: capnspacehook/cache-go/save@v2.1.1
