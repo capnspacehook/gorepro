@@ -7,7 +7,7 @@ toolchain go1.26.4
 require (
 	github.com/blang/semver/v4 v4.0.0
 	github.com/fatih/color v1.19.0
-	github.com/goretk/gore v0.14.1
+	github.com/goretk/gore v0.14.2
 	github.com/rogpeppe/go-internal v1.15.0
 	github.com/spf13/pflag v1.0.10
 )
@@ -18,6 +18,6 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/tools v0.26.0 // indirect
 )
